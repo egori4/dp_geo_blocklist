@@ -1,4 +1,46 @@
 specs/
 .specify/
 .specify/
+
+
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
+
+# Virtual environments
+venv/
 .venv-wsl/
+.env/
+.envrc
+*.env
+
+# IDEs/editors
+.vscode/
+.idea/
+*.swp
+*.sublime-workspace
+*.sublime-project
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker
+*.db
+*.sqlite3
+docker-compose.override.yml
+
+# Test output
+.coverage
+htmlcov/
+.tox/
+nosetests.xml
+pytest_cache/
+.cache/

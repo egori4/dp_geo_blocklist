@@ -1,13 +1,9 @@
-"""Package initialization for GeoIP Custom IP Blocker models."""
+"""
+GeoIP Custom IP Blocker - Models Package
+
+This package contains data models and configuration classes for the application.
+"""
 
 from .config import Config
-from .geolocation import GeoLocation, NetworkRange
-from .state import AppState, AuditRecord
 
-__all__ = [
-    "Config",
-    "GeoLocation", 
-    "NetworkRange",
-    "AppState",
-    "AuditRecord"
-]
+__all__ = ["Config"]

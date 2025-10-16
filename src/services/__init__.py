@@ -8,8 +8,8 @@ from .state_manager import StateManager
 
 __all__ = [
     "CustomFeedAPIClient",
-    "CSVProcessor", 
+    "CSVProcessor",
     "DeltaCalculator",
     "GeoDBClient",
-    "StateManager"
+    "StateManager",
 ]
