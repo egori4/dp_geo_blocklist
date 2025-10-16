@@ -1,3 +1,4 @@
 specs/
 .specify/
-.specify/memory/
+.specify/
+.venv-wsl/
