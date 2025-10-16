@@ -5,5 +5,6 @@ This package contains data models and configuration classes for the application.
 """
 
 from .config import Config
+from .geolocation import GeoLocation, NetworkRange
 
-__all__ = ["Config"]
+__all__ = ["Config", "GeoLocation", "NetworkRange"]
