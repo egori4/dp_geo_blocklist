@@ -129,6 +129,17 @@ def main() -> int:
         
         logger.info(f"Successfully extracted {len(network_ranges)} network ranges")
         
+        # For User Story 1: Save network ranges to output file for verification
+        output_file = "/app/data/network_ranges.csv"
+        try:
+            with open(output_file, 'w') as f:
+                f.write("network_cidr,geoname_id\n")  # CSV header
+                for net_range in network_ranges:
+                    f.write(f"{net_range.network_cidr},{net_range.geoname_id}\n")
+            logger.info(f"Network ranges saved to {output_file}")
+        except (OSError, IOError) as e:
+            logger.warning(f"Failed to save network ranges to file: {e}")
+        
         # Log sample of extracted ranges for verification
         sample_size = min(5, len(network_ranges))
         logger.info(f"Sample network ranges (first {sample_size}):")

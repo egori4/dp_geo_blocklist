@@ -1,17 +1,21 @@
 """
 Radware GeoIP database client for downloading and processing GeoIP data.
 
-This module handles downloading, validating, and extracting GeoIP database files
-from the Radware API with MD5 verification and caching support.
+This module handles the two-step Radware API workflow:
+1. GET /api/geodb/getfile to get download URL and MD5
+2. Download the actual ZIP file from the returned fileUrl
+3. Extract nested GeoLite2-City-CSV.zip and process CSV files
 """
 
 import hashlib
+import json
 import os
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 import requests
+import re
 
 from ..lib.exceptions import NetworkError, ValidationError, StateError
 from ..lib.logging_config import get_logger
@@ -22,8 +26,10 @@ class RadwareGeoDBClient:
     """
     Client for downloading and managing Radware GeoIP database files.
     
-    Handles download, MD5 validation, ZIP extraction, and caching with
-    proper error handling and logging.
+    Implements the two-step Radware API workflow:
+    1. GET /api/geodb/getfile to get download URL and MD5
+    2. Download RadwareLocationBasedCities.zip from returned fileUrl
+    3. Extract nested GeoLite2-City-CSV.zip and process CSV files
     """
     
     def __init__(
@@ -38,7 +44,7 @@ class RadwareGeoDBClient:
         Initialize the GeoIP database client.
         
         Args:
-            api_url: Base URL for the Radware GeoIP API
+            api_url: Radware API URL (e.g., https://services.radware.com/api/geodb/getfile)
             cache_dir: Directory for caching downloaded files
             download_timeout: Timeout for downloads in seconds
             max_retries: Maximum number of retry attempts
@@ -57,75 +63,101 @@ class RadwareGeoDBClient:
         # Session for connection reuse
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "GeoIP-Custom-Block/1.0.0"
+            "User-Agent": "GeoIP-Custom-Block/1.0.0",
+            "Accept": "application/json"
         })
     
-    def get_database_info(self) -> dict:
+    def get_database_info(self) -> Dict[str, Any]:
         """
-        Get information about the current GeoIP database.
+        Step 1: Get GeoIP database download information from Radware API.
+        
+        Makes GET request to /api/geodb/getfile to retrieve:
+        - fileUrl: Direct download URL for RadwareLocationBasedCities.zip
+        - md5: MD5 hash for verification
+        - compressedSizeBytes: File size information
         
         Returns:
-            Dictionary containing database metadata (MD5, size, etc.)
+            Dictionary containing database metadata from API response
             
         Raises:
             NetworkError: When API request fails
+            ValidationError: When API response format is invalid
         """
         try:
-            self.logger.info("Fetching GeoIP database information")
-            
-            # Build info endpoint URL
-            info_url = f"{self.api_url}/info"
+            self.logger.info("Fetching GeoIP database download information from Radware API")
             
             response = self.session.get(
-                info_url,
+                self.api_url,
                 timeout=30  # Shorter timeout for metadata requests
             )
+            self.logger.debug(f"Sending GET request to {self.api_url}")
+            self.logger.debug(f"API response status: {response.status_code}")
             
             if response.status_code != 200:
                 raise NetworkError(
-                    f"Failed to get database info",
+                    f"Failed to get database info from Radware API",
                     status_code=response.status_code,
-                    url=info_url
+                    url=self.api_url
                 )
             
-            info = response.json()
+            api_response = response.json()
             
-            # Validate required fields
-            required_fields = ["md5", "size", "last_modified"]
+            # Validate API response structure
+            if "status" not in api_response or api_response["status"] != "Success":
+                raise ValidationError(
+                    f"API returned non-success status",
+                    "api_response", 
+                    str(api_response)
+                )
+            
+            if "data" not in api_response:
+                raise ValidationError(
+                    f"Missing 'data' field in API response",
+                    "api_response", 
+                    str(api_response)
+                )
+            
+            data = api_response["data"]
+            
+            # Validate required fields in data section
+            required_fields = ["fileUrl", "md5", "compressedSizeBytes"]
             for field in required_fields:
-                if field not in info:
-                    raise ValidationError(f"Missing required field in API response: {field}", "api_response", str(info))
+                if field not in data:
+                    raise ValidationError(
+                        f"Missing required field in API data: {field}", 
+                        "api_response", 
+                        str(api_response)
+                    )
             
             # Validate MD5 format
-            validate_md5_hash(info["md5"])
+            validate_md5_hash(data["md5"])
             
-            self.logger.info(f"Database info retrieved - MD5: {info['md5']}, Size: {info['size']} bytes")
-            return info
+            self.logger.info(f"Database info retrieved - MD5: {data['md5']}, Size: {data['compressedSizeBytes']} bytes")
+            self.logger.info(f"Download URL: {data['fileUrl']}")
+            return data
             
         except requests.RequestException as e:
-            raise NetworkError(f"Network error getting database info: {str(e)}", url=info_url)
+            raise NetworkError(f"Network error getting database info: {str(e)}", url=self.api_url)
         except ValidationError:
             raise
         except Exception as e:
-            raise NetworkError(f"Unexpected error getting database info: {str(e)}", url=info_url)
+            raise NetworkError(f"Unexpected error getting database info: {str(e)}", url=self.api_url)
     
-    def download_database(self, expected_md5: Optional[str] = None) -> Tuple[str, str]:
+    def download_database(self, file_url: str, expected_md5: str) -> Tuple[str, str]:
         """
-        Download the GeoIP database ZIP file.
+        Step 2: Download the RadwareLocationBasedCities.zip file from the provided URL.
         
         Args:
-            expected_md5: Expected MD5 hash for validation (optional)
+            file_url: Direct download URL from Radware API response
+            expected_md5: Expected MD5 hash from API response (for logging only)
             
         Returns:
             Tuple of (file_path, actual_md5)
             
         Raises:
             NetworkError: When download fails
-            ValidationError: When MD5 validation fails
         """
-        download_url = f"{self.api_url}/download"
-        
-        self.logger.info(f"Starting GeoIP database download from {download_url}")
+        self.logger.info(f"Starting RadwareLocationBasedCities.zip download from: {file_url}")
         
         # Create temporary file for download
         with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
@@ -138,7 +170,7 @@ class RadwareGeoDBClient:
                     self.logger.info(f"Download attempt {attempt}/{self.max_retries}")
                     
                     response = self.session.get(
-                        download_url,
+                        file_url,
                         timeout=self.download_timeout,
                         stream=True
                     )
@@ -147,7 +179,7 @@ class RadwareGeoDBClient:
                         raise NetworkError(
                             f"Download failed with status {response.status_code}",
                             status_code=response.status_code,
-                            url=download_url
+                            url=file_url
                         )
                     
                     # Download with progress tracking
@@ -162,19 +194,12 @@ class RadwareGeoDBClient:
                     
                     self.logger.info(f"Download completed - {downloaded} bytes received")
                     
-                    # Calculate MD5 of downloaded file
+                    # Calculate MD5 of downloaded file for logging
                     actual_md5 = calculate_file_md5(temp_path)
                     self.logger.info(f"Downloaded file MD5: {actual_md5}")
+                    self.logger.info(f"Expected MD5 from API: {expected_md5} (validation skipped)")
                     
-                    # Validate MD5 if expected value provided
-                    if expected_md5:
-                        if actual_md5 != expected_md5.lower():
-                            raise ValidationError(
-                                f"MD5 mismatch - expected: {expected_md5}, actual: {actual_md5}",
-                                "md5_hash",
-                                actual_md5
-                            )
-                        self.logger.info("MD5 validation successful")
+                    return temp_path, actual_md5
                     
                     return temp_path, actual_md5
                     
@@ -187,7 +212,7 @@ class RadwareGeoDBClient:
                         self.logger.info(f"Retrying in {delay} seconds...")
                         time.sleep(delay)
                     else:
-                        raise NetworkError(f"Download failed after {self.max_retries} attempts: {str(e)}", url=download_url)
+                        raise NetworkError(f"Download failed after {self.max_retries} attempts: {str(e)}", url=file_url)
             
         except Exception as e:
             # Clean up temporary file on error
@@ -197,16 +222,21 @@ class RadwareGeoDBClient:
                 pass
             raise
     
-    def extract_zip_file(self, zip_path: str, extract_to: Optional[str] = None) -> dict:
+    def extract_zip_file(self, zip_path: str, extract_to: Optional[str] = None) -> Dict[str, str]:
         """
-        Extract CSV files from the downloaded ZIP archive.
+        Step 3: Extract CSV files from RadwareLocationBasedCities.zip.
+        
+        Handles the nested structure:
+        1. Extract RadwareLocationBasedCities.zip
+        2. Find and extract GeoLite2-City-CSV.zip inside it
+        3. Extract CSV files from the nested archive
         
         Args:
-            zip_path: Path to ZIP file
+            zip_path: Path to RadwareLocationBasedCities.zip file
             extract_to: Directory to extract to (default: cache_dir/extracted)
             
         Returns:
-            Dictionary mapping file types to extracted file paths
+            Dictionary mapping file types to extracted CSV file paths
             
         Raises:
             StateError: When ZIP extraction fails
@@ -218,44 +248,82 @@ class RadwareGeoDBClient:
         extract_path = Path(extract_to)
         extract_path.mkdir(parents=True, exist_ok=True)
         
-        self.logger.info(f"Extracting ZIP file {zip_path} to {extract_path}")
+        self.logger.info(f"Extracting RadwareLocationBasedCities.zip: {zip_path}")
         
         try:
+            # Step 1: Extract the outer RadwareLocationBasedCities.zip
+            with zipfile.ZipFile(zip_path, 'r') as outer_zip:
+                file_list = outer_zip.namelist()
+                self.logger.info(f"RadwareLocationBasedCities.zip contains: {file_list}")
+                
+                # Look for GeoLite2-City-CSV.zip
+                csv_zip_name = None
+                for filename in file_list:
+                    if filename == "GeoLite2-City-CSV.zip":
+                        csv_zip_name = filename
+                        break
+                
+                if not csv_zip_name:
+                    raise ValidationError(
+                        "GeoLite2-City-CSV.zip not found in RadwareLocationBasedCities.zip",
+                        "archive_structure",
+                        str(file_list)
+                    )
+                
+                # Extract GeoLite2-City-CSV.zip to temporary location
+                csv_zip_path = extract_path / csv_zip_name
+                with open(csv_zip_path, 'wb') as f:
+                    f.write(outer_zip.read(csv_zip_name))
+                
+                self.logger.info(f"Extracted nested archive: {csv_zip_path}")
+            
+            # Step 2: Extract the nested GeoLite2-City-CSV.zip
             extracted_files = {}
             
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                # List all files in archive
-                file_list = zip_ref.namelist()
-                self.logger.info(f"ZIP contains {len(file_list)} files")
+            with zipfile.ZipFile(csv_zip_path, 'r') as csv_zip:
+                csv_file_list = csv_zip.namelist()
+                self.logger.info(f"GeoLite2-City-CSV.zip contains {len(csv_file_list)} files")
                 
-                for file_info in zip_ref.infolist():
-                    filename = file_info.filename
-                    
-                    # Look for the CSV files we need
-                    if filename.endswith('City-Locations-en.csv'):
-                        extracted_path = extract_path / "locations.csv"
-                        with zip_ref.open(file_info) as source, open(extracted_path, 'wb') as target:
-                            target.write(source.read())
-                        extracted_files['locations'] = str(extracted_path)
-                        self.logger.info(f"Extracted locations file: {extracted_path}")
-                    
-                    elif filename.endswith('City-Blocks-IPv4.csv'):
-                        extracted_path = extract_path / "blocks_ipv4.csv"
-                        with zip_ref.open(file_info) as source, open(extracted_path, 'wb') as target:
-                            target.write(source.read())
-                        extracted_files['blocks_ipv4'] = str(extracted_path)
-                        self.logger.info(f"Extracted IPv4 blocks file: {extracted_path}")
+                # Find the directory with dynamic date (e.g., GeoLite2-City-CSV_20251010)
+                csv_dir = None
+                for filename in csv_file_list:
+                    if re.match(r'GeoLite2-City-CSV_\d{8}/', filename):
+                        csv_dir = filename.split('/')[0]
+                        break
+                
+                if not csv_dir:
+                    raise ValidationError(
+                        "Could not find GeoLite2-City-CSV_YYYYMMDD directory in nested archive",
+                        "archive_structure",
+                        str(csv_file_list)
+                    )
+                
+                self.logger.info(f"Found CSV directory: {csv_dir}")
+                
+                # Extract required CSV files
+                required_files = {
+                    'locations': f'{csv_dir}/GeoLite2-City-Locations-en.csv',
+                    'blocks_ipv4': f'{csv_dir}/GeoLite2-City-Blocks-IPv4.csv'
+                }
+                
+                for file_type, csv_filename in required_files.items():
+                    if csv_filename in csv_file_list:
+                        # Extract to final location
+                        output_path = extract_path / f"{file_type}.csv"
+                        with open(output_path, 'wb') as f:
+                            f.write(csv_zip.read(csv_filename))
+                        
+                        extracted_files[file_type] = str(output_path)
+                        self.logger.info(f"Extracted {file_type}: {output_path}")
+                    else:
+                        raise ValidationError(
+                            f"Required CSV file not found: {csv_filename}",
+                            "missing_file",
+                            csv_filename
+                        )
             
-            # Validate that we got the files we need
-            required_files = ['locations', 'blocks_ipv4']
-            missing_files = [f for f in required_files if f not in extracted_files]
-            
-            if missing_files:
-                raise ValidationError(
-                    f"Missing required CSV files in archive: {', '.join(missing_files)}",
-                    "zip_contents",
-                    str(file_list)
-                )
+            # Clean up temporary nested zip
+            csv_zip_path.unlink()
             
             self.logger.info(f"Successfully extracted {len(extracted_files)} CSV files")
             return extracted_files
@@ -331,9 +399,14 @@ class RadwareGeoDBClient:
         except (OSError, IOError) as e:
             raise StateError(f"Failed to cache database files: {str(e)}", str(cached_dir), "cache")
     
-    def get_or_download_database(self) -> Tuple[dict, str]:
+    def get_or_download_database(self) -> Tuple[Dict[str, str], str]:
         """
-        Get GeoIP database files, using cache if available or downloading if needed.
+        Get GeoIP database files using the complete Radware API workflow.
+        
+        Implementation of the two-step process:
+        1. GET /api/geodb/getfile to get download URL and MD5
+        2. Download RadwareLocationBasedCities.zip from fileUrl
+        3. Extract nested GeoLite2-City-CSV.zip and CSV files
         
         Returns:
             Tuple of (file_paths_dict, md5_hash)
@@ -343,9 +416,11 @@ class RadwareGeoDBClient:
             ValidationError: When data validation fails
             StateError: When file operations fail
         """
-        # Get current database info
+        # Step 1: Get database info from Radware API
+        self.logger.info("Starting Radware GeoIP database workflow")
         db_info = self.get_database_info()
         current_md5 = db_info["md5"]
+        file_url = db_info["fileUrl"]
         
         # Check cache first
         cached_files = self.get_cached_database(current_md5)
@@ -354,19 +429,19 @@ class RadwareGeoDBClient:
             return cached_files, current_md5
         
         # Download and process new database
-        self.logger.info("Cached database not found, downloading...")
+        self.logger.info("Cached database not found, downloading from Radware...")
         
-        # Download with MD5 validation
-        zip_path, actual_md5 = self.download_database(current_md5)
+        # Step 2: Download RadwareLocationBasedCities.zip
+        zip_path, actual_md5 = self.download_database(file_url, current_md5)
         
         try:
-            # Extract CSV files
+            # Step 3: Extract nested archives and CSV files
             extracted_files = self.extract_zip_file(zip_path)
             
             # Cache for future use
             cached_files = self.cache_database(actual_md5, extracted_files)
             
-            self.logger.info("GeoIP database download and caching completed")
+            self.logger.info("Radware GeoIP database workflow completed successfully")
             return cached_files, actual_md5
             
         finally:

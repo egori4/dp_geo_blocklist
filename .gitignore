@@ -1,6 +1,5 @@
 specs/
 .specify/
-.specify/
 
 
 # Python
@@ -44,3 +43,7 @@ htmlcov/
 nosetests.xml
 pytest_cache/
 .cache/
+network_ranges_output.csv
+tmp/
+data/network_ranges.csv
+data/network_ranges_bak.csv
