@@ -16,11 +16,12 @@ from ..lib.exceptions import ConfigError
 class Config:
     """Configuration dataclass with environment variable loading and validation."""
 
-    # API Configuration - Custom Feed REST API
-    api_host: str
-    api_port: int
-    api_username: str
-    api_password: str
+    # DefensePro Configuration
+    cc_ip: str  # CyberController IP address
+    dp_ips: List[str]  # List of DefensePro device IP addresses (supports multiple devices)
+    cc_username: str
+    cc_password: str
+    verify_ssl: bool
 
     # Radware GeoIP Source
     radware_api_url: str
@@ -61,11 +62,13 @@ class Config:
             ConfigError: When required environment variables are missing or invalid
         """
         try:
-            # Required API configuration
-            api_host = cls._get_required_env("API_HOST")
-            api_port = cls._get_int_env("API_PORT")
-            api_username = cls._get_required_env("API_USERNAME")
-            api_password = cls._get_required_env("API_PASSWORD")
+            # Required DefensePro/CyberController configuration
+            cc_ip = cls._get_required_env("CC_IP")
+            dp_ips_str = cls._get_required_env("DP_IPS")
+            dp_ips = [ip.strip() for ip in dp_ips_str.split(",")]
+            cc_username = cls._get_required_env("CC_USERNAME")
+            cc_password = cls._get_required_env("CC_PASSWORD")
+            verify_ssl = cls._get_bool_env("VERIFY_SSL", False)
 
             # Required Radware GeoIP source
             radware_api_url = cls._get_required_env("RADWARE_API_URL")
@@ -100,6 +103,7 @@ class Config:
                 log_level=log_level,
                 target_country=target_country,
                 target_regions=target_regions,
+                dp_ips=dp_ips,
                 api_timeout=api_timeout,
                 download_timeout=download_timeout,
                 max_retries=max_retries,
@@ -107,10 +111,11 @@ class Config:
             )
 
             return cls(
-                api_host=api_host,
-                api_port=api_port,
-                api_username=api_username,
-                api_password=api_password,
+                cc_ip=cc_ip,
+                dp_ips=dp_ips,
+                cc_username=cc_username,
+                cc_password=cc_password,
+                verify_ssl=verify_ssl,
                 radware_api_url=radware_api_url,
                 target_country=target_country,
                 target_regions=target_regions,
@@ -185,6 +190,7 @@ class Config:
         log_level: str,
         target_country: str,
         target_regions: List[str],
+        dp_ips: List[str],
         api_timeout: int,
         download_timeout: int,
         max_retries: int,
@@ -215,6 +221,22 @@ class Config:
                 "TARGET_REGIONS", 
                 "comma-separated region codes"
             )
+        
+        # Validate DefensePro IPs
+        if not dp_ips:
+            raise ConfigError(
+                "DP_IPS cannot be empty",
+                "DP_IPS",
+                "comma-separated IP addresses"
+            )
+        
+        for dp_ip in dp_ips:
+            if not dp_ip:
+                raise ConfigError(
+                    "DP_IPS contains empty IP address",
+                    "DP_IPS",
+                    "valid IP addresses"
+                )
 
         # Validate timeout values
         if api_timeout <= 0:
@@ -246,16 +268,11 @@ class Config:
                 "positive float"
             )
 
-    @property
-    def api_base_url(self) -> str:
-        """Get the full API base URL."""
-        return f"https://{self.api_host}:{self.api_port}"
-
     def __repr__(self) -> str:
         """Safe representation that doesn't expose sensitive information."""
         return (
-            f"Config(api_host='{self.api_host}', "
-            f"api_port={self.api_port}, "
+            f"Config(cc_ip='{self.cc_ip}', "
+            f"dp_ips={self.dp_ips} ({len(self.dp_ips)} devices), "
             f"target_country='{self.target_country}', "
             f"target_regions={self.target_regions}, "
             f"log_level='{self.log_level}', "
