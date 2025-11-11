@@ -36,6 +36,7 @@ class RadwareGeoDBClient:
         self,
         api_url: str,
         cache_dir: str,
+        api_timeout: int = 30,
         download_timeout: int = 300,
         max_retries: int = 3,
         retry_backoff: float = 2.0
@@ -46,12 +47,14 @@ class RadwareGeoDBClient:
         Args:
             api_url: Radware API URL (e.g., https://services.radware.com/api/geodb/getfile)
             cache_dir: Directory for caching downloaded files
-            download_timeout: Timeout for downloads in seconds
+            api_timeout: Timeout for API metadata requests in seconds
+            download_timeout: Timeout for ZIP file downloads in seconds
             max_retries: Maximum number of retry attempts
             retry_backoff: Backoff multiplier for retries
         """
         self.api_url = validate_url(api_url)
         self.cache_dir = Path(cache_dir)
+        self.api_timeout = api_timeout
         self.download_timeout = download_timeout
         self.max_retries = max_retries
         self.retry_backoff = retry_backoff
@@ -88,7 +91,7 @@ class RadwareGeoDBClient:
             
             response = self.session.get(
                 self.api_url,
-                timeout=30  # Shorter timeout for metadata requests
+                timeout=self.api_timeout
             )
             self.logger.debug(f"Sending GET request to {self.api_url}")
             self.logger.debug(f"API response status: {response.status_code}")
@@ -149,13 +152,14 @@ class RadwareGeoDBClient:
         
         Args:
             file_url: Direct download URL from Radware API response
-            expected_md5: Expected MD5 hash from API response (for logging only)
+            expected_md5: Expected MD5 hash from API response for verification
             
         Returns:
             Tuple of (file_path, actual_md5)
             
         Raises:
             NetworkError: When download fails
+            ValidationError: When MD5 verification fails
         """
         self.logger.info(f"Starting RadwareLocationBasedCities.zip download from: {file_url}")
         
@@ -194,13 +198,19 @@ class RadwareGeoDBClient:
                     
                     self.logger.info(f"Download completed - {downloaded} bytes received")
                     
-                    # Calculate MD5 of downloaded file for logging
+                    # Calculate and verify MD5 of downloaded file
                     actual_md5 = calculate_file_md5(temp_path)
                     self.logger.info(f"Downloaded file MD5: {actual_md5}")
-                    self.logger.info(f"Expected MD5 from API: {expected_md5} (validation skipped)")
+                    self.logger.info(f"Expected MD5 from API: {expected_md5}")
                     
-                    return temp_path, actual_md5
+                    if actual_md5.lower() != expected_md5.lower():
+                        raise ValidationError(
+                            f"MD5 verification failed - downloaded file corrupted or tampered",
+                            field="file_md5",
+                            expected_type=f"expected: {expected_md5}, got: {actual_md5}"
+                        )
                     
+                    self.logger.info("✓ MD5 verification passed - file integrity confirmed")
                     return temp_path, actual_md5
                     
                 except (requests.RequestException, OSError) as e:
@@ -399,37 +409,61 @@ class RadwareGeoDBClient:
         except (OSError, IOError) as e:
             raise StateError(f"Failed to cache database files: {str(e)}", str(cached_dir), "cache")
     
-    def get_or_download_database(self) -> Tuple[Dict[str, str], str]:
+    def get_or_download_database(self, force_download: bool = False) -> Tuple[Dict[str, str], str, bool]:
         """
         Get GeoIP database files using the complete Radware API workflow.
         
         Implementation of the two-step process:
         1. GET /api/geodb/getfile to get download URL and MD5
-        2. Download RadwareLocationBasedCities.zip from fileUrl
-        3. Extract nested GeoLite2-City-CSV.zip and CSV files
+        2. Check if cached version matches MD5 (skip download if match)
+        3. Download RadwareLocationBasedCities.zip from fileUrl (if needed)
+        4. Extract nested GeoLite2-City-CSV.zip and CSV files
+        
+        Args:
+            force_download: If True, bypass cache and force fresh download (default: False)
+                           Can be set via FORCE_DOWNLOAD environment variable for testing
         
         Returns:
-            Tuple of (file_paths_dict, md5_hash)
+            Tuple of (file_paths_dict, md5_hash, is_cached)
+            - file_paths_dict: Paths to extracted CSV files
+            - md5_hash: MD5 of the database
+            - is_cached: True if using cached version (no download), False if freshly downloaded
             
         Raises:
             NetworkError: When download/API requests fail
             ValidationError: When data validation fails
             StateError: When file operations fail
         """
+        # Check for force download override from environment
+        if not force_download:
+            force_download_env = os.getenv("FORCE_DOWNLOAD", "false").lower()
+            force_download = force_download_env in ("true", "1", "yes")
+        
+        if force_download:
+            self.logger.warning("⚠ FORCE_DOWNLOAD enabled - bypassing cache, downloading fresh database")
+        
         # Step 1: Get database info from Radware API
         self.logger.info("Starting Radware GeoIP database workflow")
         db_info = self.get_database_info()
         current_md5 = db_info["md5"]
         file_url = db_info["fileUrl"]
         
-        # Check cache first
-        cached_files = self.get_cached_database(current_md5)
-        if cached_files:
-            self.logger.info("Using cached GeoIP database")
-            return cached_files, current_md5
+        # Check cache first (unless force download)
+        if not force_download:
+            cached_files = self.get_cached_database(current_md5)
+            if cached_files:
+                self.logger.info(
+                    f"✓ Cached database matches API MD5 ({current_md5}) - skipping download"
+                )
+                self.logger.info("Using cached GeoIP database - no processing needed")
+                return cached_files, current_md5, True  # is_cached = True
+            else:
+                self.logger.info(
+                    f"Cached database not found or MD5 mismatch - downloading fresh database"
+                )
         
         # Download and process new database
-        self.logger.info("Cached database not found, downloading from Radware...")
+        self.logger.info("Downloading GeoIP database from Radware...")
         
         # Step 2: Download RadwareLocationBasedCities.zip
         zip_path, actual_md5 = self.download_database(file_url, current_md5)
@@ -442,7 +476,7 @@ class RadwareGeoDBClient:
             cached_files = self.cache_database(actual_md5, extracted_files)
             
             self.logger.info("Radware GeoIP database workflow completed successfully")
-            return cached_files, actual_md5
+            return cached_files, actual_md5, False  # is_cached = False
             
         finally:
             # Clean up downloaded ZIP file

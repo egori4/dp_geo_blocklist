@@ -81,6 +81,21 @@ class DefenseProClient:
         # Set up logging
         self.log = logger if logger else get_logger("defensepro_client")
         
+        # Read MAX_NETWORKS_PER_CLASS from environment
+        try:
+            self.max_networks_per_class = int(os.getenv("MAX_NETWORKS_PER_CLASS", "250"))
+            if not (1 <= self.max_networks_per_class <= 256):
+                self.log.warning(
+                    f"MAX_NETWORKS_PER_CLASS={self.max_networks_per_class} out of range (1-256), "
+                    "using default 250"
+                )
+                self.max_networks_per_class = 250
+        except (ValueError, TypeError):
+            self.max_networks_per_class = 250
+            self.log.warning("Invalid MAX_NETWORKS_PER_CLASS in environment, using default 250")
+        
+        self.log.debug(f"MAX_NETWORKS_PER_CLASS configured: {self.max_networks_per_class}")
+        
         # Load or create session
         self._load_or_login()
     
@@ -229,8 +244,10 @@ class DefenseProClient:
         relogin_attempted = False
         request_timeout = timeout if timeout is not None else self.timeout
         had_transaction_rollback = False  # Track if previous attempt had rollback error
+        rollback_verification_attempts = 0  # Track extra attempts for rollback verification
+        max_attempts = self.max_retries + 2  # Allow 2 extra attempts for rollback verification
         
-        for attempt in range(1, self.max_retries + 1):
+        for attempt in range(1, max_attempts + 1):
             try:
                 response = self.session.request(
                     method=method,
@@ -244,10 +261,16 @@ class DefenseProClient:
                 
                 # Log successful retry if this wasn't the first attempt
                 if attempt > 1:
-                    self.log.info(
-                        f"✓ Retry successful on attempt {attempt}/{self.max_retries} "
-                        f"[{method.upper()}] {url}"
-                    )
+                    if had_transaction_rollback:
+                        self.log.info(
+                            f"✓ Rollback recovery successful - network verified on attempt {attempt} "
+                            f"[{method.upper()}] {url}"
+                        )
+                    else:
+                        self.log.info(
+                            f"✓ Retry successful on attempt {attempt}/{self.max_retries} "
+                            f"[{method.upper()}] {url}"
+                        )
                 
                 return response
                 
@@ -329,11 +352,22 @@ class DefenseProClient:
                         # This commonly happens during parallel operations when the API is under load
                         if "m_00386" in err_message.lower() and "rollbackexception" in err_message.lower():
                             had_transaction_rollback = True  # Set flag for next iteration
-                            self.log.debug(
-                                f"⚠ Transaction rollback detected - network may have been created despite error. "
-                                f"Will verify on retry. [{method.upper()}] {url}"
-                            )
-                            # Continue to retry - if network exists, we'll detect rollback_recovery
+                            rollback_verification_attempts += 1
+                            
+                            if rollback_verification_attempts <= 2:
+                                self.log.info(
+                                    f"⚠ Transaction rollback detected - network may have been created despite error. "
+                                    f"Retrying immediately to verify (rollback verification attempt {rollback_verification_attempts}/2). "
+                                    f"[{method.upper()}] {url}"
+                                )
+                                time.sleep(0.5)  # Brief pause before verification retry
+                                continue
+                            else:
+                                self.log.error(
+                                    f"✗ Transaction rollback persists after {rollback_verification_attempts} verification attempts. "
+                                    f"[{method.upper()}] {url}"
+                                )
+                                # Fall through to normal error handling
                     except (ValueError, KeyError):
                         pass  # Failed to parse JSON, treat as normal 500
                     
@@ -432,7 +466,7 @@ class DefenseProClient:
         Args:
             dp_ip: DefensePro device IP address
             network_class_name: Name of the network class (e.g., "user_defined_feed_1")
-            network_index: Index within the class (0-249)
+            network_index: Index within the class (0-255, depending on MAX_NETWORKS_PER_CLASS)
             network_address: Network base address (e.g., "2.56.24.0")
             network_mask: Network mask (e.g., "255.255.255.128")
             
@@ -443,12 +477,13 @@ class DefenseProClient:
             NetworkError: If creation fails
             ValidationError: If parameters are invalid
         """
-        # Validate parameters
-        if network_index < 0 or network_index > 249:
+        # Validate parameters using configured max_networks_per_class
+        max_index = self.max_networks_per_class - 1
+        if network_index < 0 or network_index > max_index:
             raise ValidationError(
-                f"Network index must be 0-249, got {network_index}",
+                f"Network index must be 0-{max_index}, got {network_index}",
                 field="network_index",
-                expected_type="0-249"
+                value=network_index
             )
         
         path = f"/mgmt/device/byip/{dp_ip}/config/rsBWMNetworkTable/{network_class_name}/{network_index}"
@@ -1078,6 +1113,86 @@ class DefenseProClient:
             raise NetworkError(
                 f"Failed to lock DefensePro device {dp_ip}: {str(e)}",
                 details={"dp_ip": dp_ip}
+            )
+    
+    def update_policies(self, dp_ip: str) -> Dict[str, Any]:
+        """
+        Apply pending configuration changes (policy updates) to DefensePro device.
+        
+        This operation commits all configuration changes made since the device was locked,
+        making them active on the DefensePro device. Must be called after making
+        configuration changes (network classes, blocklists) and before unlocking the device.
+        
+        Args:
+            dp_ip: DefensePro device IP address
+            
+        Returns:
+            Dict containing response status and any warnings
+            
+        Raises:
+            NetworkError: If policy update operation fails
+        """
+        path = f"/mgmt/device/byip/{dp_ip}/config/updatepolicies"
+        url = f"https://{self.cc_ip}{path}"
+        
+        self.log.info(f"Applying policy updates to DefensePro device {dp_ip}")
+        self.log.debug(f"Policy update URL: {url}")
+        
+        try:
+            # POST request with no payload to apply policy updates
+            response = self._post(url)
+            
+            # Try to parse JSON response
+            try:
+                data = response.json()
+            except Exception:
+                # Some APIs return text instead of JSON
+                data = {"response_text": response.text if hasattr(response, 'text') else "Success"}
+            
+            # Analyze response for success/failure indicators
+            response_str = str(data).lower()
+            warnings = []
+            
+            # Check for known error patterns
+            error_patterns = ['error', 'failed', 'exception', 'timeout', 'denied']
+            success_patterns = ['success', 'completed', 'applied', 'updated', 'ok']
+            
+            has_error = any(pattern in response_str for pattern in error_patterns)
+            has_success = any(pattern in response_str for pattern in success_patterns)
+            
+            if has_error:
+                error_msg = f"Policy update failed for {dp_ip}: API response indicates failure"
+                self.log.error(f"{error_msg}: {data}")
+                raise NetworkError(
+                    error_msg,
+                    details={"dp_ip": dp_ip, "response": data}
+                )
+            
+            if not has_success:
+                # No clear success indicator - add warning
+                warnings.append(
+                    "API response does not provide clear success confirmation - "
+                    "verify policy status manually if issues occur"
+                )
+                self.log.warning(f"Policy update response unclear for {dp_ip}: {data}")
+            else:
+                self.log.info(f"Successfully applied policy updates to DefensePro device {dp_ip}")
+            
+            return {
+                "status": "success",
+                "message": f"Policy updates applied to {dp_ip}",
+                "api_response": data,
+                "warnings": warnings if warnings else None
+            }
+            
+        except NetworkError:
+            raise
+        except Exception as e:
+            error_msg = f"Failed to apply policy updates to DefensePro device {dp_ip}: {str(e)}"
+            self.log.error(error_msg)
+            raise NetworkError(
+                error_msg,
+                details={"dp_ip": dp_ip, "exception": str(e)}
             )
     
     def unlock_device(self, dp_ip: str) -> Dict[str, Any]:

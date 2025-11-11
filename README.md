@@ -97,7 +97,38 @@ SYSLOG_PORT=514
 STATE_FILE=/app/data/ip_state.json
 HISTORY_FILE=/app/data/ip_history.jsonl
 GEODB_CACHE_DIR=/app/data/geodb_cache
+
+# Optional: Dry-Run / Step Control (all default to 'true')
+ENABLE_GEODB_DOWNLOAD=true          # Download fresh database from Radware
+ENABLE_NETWORK_SUMMARIZATION=true   # Aggregate networks (760 → 87 networks)
+CONFIGURE_DEFENSEPRO=true           # Push to DefensePro devices
 ```
+
+### Dry-Run Mode
+
+Control workflow execution for testing and validation:
+
+```bash
+# Dry-run: Extract data only, no DefensePro push
+CONFIGURE_DEFENSEPRO=false
+
+# Test with cached data (no download)
+ENABLE_GEODB_DOWNLOAD=false
+
+# Use original networks without summarization
+ENABLE_NETWORK_SUMMARIZATION=false
+
+# Full dry-run: Extract and validate data only
+ENABLE_GEODB_DOWNLOAD=true
+ENABLE_NETWORK_SUMMARIZATION=false
+CONFIGURE_DEFENSEPRO=false
+```
+
+**Use Cases:**
+- **Data Validation**: Review extracted networks in CSV files before pushing
+- **Summarization Testing**: Compare original vs. summarized networks
+- **Offline Testing**: Work with cached data without API calls
+- **Controlled Rollout**: Validate configuration on test devices first
 
 ### Execution
 
@@ -228,6 +259,49 @@ docker start geo-ip-blocker
 
 ## 📝 Version History
 
+### Version 1.2.0 (2025-11-11) - Enhancements & Configuration Reorganization
+
+**Enhancements:**
+- **MD5 Validation**: Added validation of MD5 between the downloaded db and declared MD5 from the endpoint
+- **Caching**: Added condition - if MD5 of the new db matches last downloaded db, exit early
+- **Policy Update Integration**: Added policy update after network class and blocklist creation
+- **Workflow Optimization**: Reorganized processing order - summarization now occurs after GeoIP filtering
+
+**Configuration:**
+- **Timeout Variables**: Reorganized with clear prefixes:
+  - `DP_API_TIMEOUT=30` - DefensePro CyberController API operations
+  - `DP_DELETE_TIMEOUT=120` - DefensePro bulk delete operations (250 networks)
+  - `GEODB_API_TIMEOUT=30` - Radware GeoIP API metadata requests
+  - `GEODB_DOWNLOAD_TIMEOUT=300` - GeoIP database ZIP download (~78MB)
+
+- **Network Class Limits**: Added configurable network class capacity:
+  - `MAX_NETWORKS_PER_CLASS=256` - Maximum networks per DefensePro class (range: 1-256)
+
+**New Features:**
+- **Workflow Control Flags**: Four configurable flags for controlled execution:
+  - `ENABLE_GEODB_DOWNLOAD` (true/false): Control GeoIP database download vs. using cache
+  - `FILTER_TARGET_REGIONS` (true/false): Filter target regions or use cached CSV from previous run
+  - `ENABLE_NETWORK_SUMMARIZATION` (true/false): Toggle network aggregation (760 → 560 networks)
+  - `CONFIGURE_DEFENSEPRO` (true/false): Enable/disable DefensePro device configuration
+
+
+**Bug Fixes:**
+- **Rollback Recovery**: Fixed transaction rollback handling to properly detect and recover from M_00386 errors
+  - Extended retry loop by 2 attempts for rollback verification
+  - Added `had_transaction_rollback` flag persistence across retry attempts
+  - Improved logging to distinguish rollback recovery from genuine failures
+  
+- **Network Index Validation**: Fixed ValidationError calls throughout codebase
+  - Corrected parameter from `expected_type` to `value` per exception signature
+  - Updated validation to use dynamic `MAX_NETWORKS_PER_CLASS` instead of hardcoded limits
+
+- **Double Summarization**: Eliminated duplicate summarization execution
+  - Network summarization now runs once instead of twice
+  - Improved performance and log clarity
+
+
+
+
 ### Version 1.1.0 (2025-11-10) - Performance & Reliability Update
 
 **Major Enhancements:**
@@ -243,7 +317,7 @@ docker start geo-ip-blocker
 - Fixed DELETE operation timeout (30s → 120s for 250-network bulk deletions)
 
 **Configuration:**
-- Added `DELETE_TIMEOUT=120` for bulk operations
+- Added `DELETE_TIMEOUT=120` for bulk operations(deleting networks on DefensePro)
 - Added `PARALLEL_EXECUTION=true/false` to toggle execution modes
 - Added `PARALLEL_WORKERS=10` (range: 1-50) for concurrency control
 

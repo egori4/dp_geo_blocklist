@@ -42,13 +42,23 @@ class Config:
     history_file: str
     geodb_cache_dir: str
 
-    # Timeout Configuration
-    api_timeout: int
-    download_timeout: int
+    # DefensePro Timeout Configuration
+    dp_api_timeout: int
+    dp_delete_timeout: int
+
+    # GeoIP Database Timeout Configuration
+    geodb_api_timeout: int
+    geodb_download_timeout: int
 
     # Retry Configuration
     max_retries: int
     retry_backoff_factor: float
+
+    # Dry-Run / Step Control Configuration
+    enable_geodb_download: bool
+    enable_network_summarization: bool
+    configure_defensepro: bool
+    filter_target_regions: bool
 
     @classmethod
     def from_environment(cls) -> "Config":
@@ -90,13 +100,23 @@ class Config:
             history_file = os.getenv("HISTORY_FILE", "/app/data/ip_history.jsonl")
             geodb_cache_dir = os.getenv("GEODB_CACHE_DIR", "/app/data/geodb_cache")
 
-            # Timeout configuration with defaults
-            api_timeout = cls._get_int_env("API_TIMEOUT", 30)
-            download_timeout = cls._get_int_env("DOWNLOAD_TIMEOUT", 300)
+            # DefensePro timeout configuration with defaults
+            dp_api_timeout = cls._get_int_env("DP_API_TIMEOUT", 30)
+            dp_delete_timeout = cls._get_int_env("DP_DELETE_TIMEOUT", 120)
+
+            # GeoIP database timeout configuration with defaults
+            geodb_api_timeout = cls._get_int_env("GEODB_API_TIMEOUT", 30)
+            geodb_download_timeout = cls._get_int_env("GEODB_DOWNLOAD_TIMEOUT", 300)
 
             # Retry configuration with defaults
             max_retries = cls._get_int_env("MAX_RETRIES", 3)
             retry_backoff_factor = cls._get_float_env("RETRY_BACKOFF_FACTOR", 2.0)
+
+            # Dry-run / step control configuration with defaults (all enabled by default)
+            enable_geodb_download = cls._get_bool_env("ENABLE_GEODB_DOWNLOAD", True)
+            enable_network_summarization = cls._get_bool_env("ENABLE_NETWORK_SUMMARIZATION", True)
+            configure_defensepro = cls._get_bool_env("CONFIGURE_DEFENSEPRO", True)
+            filter_target_regions = cls._get_bool_env("FILTER_TARGET_REGIONS", True)
 
             # Validate configuration values
             cls._validate_config(
@@ -104,8 +124,10 @@ class Config:
                 target_country=target_country,
                 target_regions=target_regions,
                 dp_ips=dp_ips,
-                api_timeout=api_timeout,
-                download_timeout=download_timeout,
+                dp_api_timeout=dp_api_timeout,
+                dp_delete_timeout=dp_delete_timeout,
+                geodb_api_timeout=geodb_api_timeout,
+                geodb_download_timeout=geodb_download_timeout,
                 max_retries=max_retries,
                 retry_backoff_factor=retry_backoff_factor,
             )
@@ -127,10 +149,16 @@ class Config:
                 state_file=state_file,
                 history_file=history_file,
                 geodb_cache_dir=geodb_cache_dir,
-                api_timeout=api_timeout,
-                download_timeout=download_timeout,
+                dp_api_timeout=dp_api_timeout,
+                dp_delete_timeout=dp_delete_timeout,
+                geodb_api_timeout=geodb_api_timeout,
+                geodb_download_timeout=geodb_download_timeout,
                 max_retries=max_retries,
                 retry_backoff_factor=retry_backoff_factor,
+                enable_geodb_download=enable_geodb_download,
+                enable_network_summarization=enable_network_summarization,
+                configure_defensepro=configure_defensepro,
+                filter_target_regions=filter_target_regions,
             )
 
         except ConfigError:
@@ -191,8 +219,10 @@ class Config:
         target_country: str,
         target_regions: List[str],
         dp_ips: List[str],
-        api_timeout: int,
-        download_timeout: int,
+        dp_api_timeout: int,
+        dp_delete_timeout: int,
+        geodb_api_timeout: int,
+        geodb_download_timeout: int,
         max_retries: int,
         retry_backoff_factor: float,
     ) -> None:
@@ -238,18 +268,33 @@ class Config:
                     "valid IP addresses"
                 )
 
-        # Validate timeout values
-        if api_timeout <= 0:
+        # Validate DefensePro timeout values
+        if dp_api_timeout <= 0:
             raise ConfigError(
-                f"API timeout must be positive, got {api_timeout}",
-                "API_TIMEOUT",
+                f"DefensePro API timeout must be positive, got {dp_api_timeout}",
+                "DP_API_TIMEOUT",
+                "positive integer"
+            )
+        
+        if dp_delete_timeout <= 0:
+            raise ConfigError(
+                f"DefensePro delete timeout must be positive, got {dp_delete_timeout}",
+                "DP_DELETE_TIMEOUT",
                 "positive integer"
             )
 
-        if download_timeout <= 0:
+        # Validate GeoIP database timeout values
+        if geodb_api_timeout <= 0:
             raise ConfigError(
-                f"Download timeout must be positive, got {download_timeout}",
-                "DOWNLOAD_TIMEOUT", 
+                f"GeoIP API timeout must be positive, got {geodb_api_timeout}",
+                "GEODB_API_TIMEOUT",
+                "positive integer"
+            )
+        
+        if geodb_download_timeout <= 0:
+            raise ConfigError(
+                f"GeoIP download timeout must be positive, got {geodb_download_timeout}",
+                "GEODB_DOWNLOAD_TIMEOUT",
                 "positive integer"
             )
 
@@ -276,5 +321,9 @@ class Config:
             f"target_country='{self.target_country}', "
             f"target_regions={self.target_regions}, "
             f"log_level='{self.log_level}', "
-            f"api_timeout={self.api_timeout})"
+            f"api_timeout={self.dp_api_timeout}, "
+            f"geodb_download={self.enable_geodb_download}, "
+            f"summarization={self.enable_network_summarization}, "
+            f"configure_defensepro={self.configure_defensepro}, "
+            f"filter_regions={self.filter_target_regions})"
         )

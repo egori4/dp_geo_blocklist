@@ -34,11 +34,11 @@ class NetworkClassManager:
     """
     Manages creation and organization of DefensePro network classes.
     
-    Handles splitting network ranges into classes with max 250 networks each,
+    Handles splitting network ranges into classes with max networks per class
+    (configurable via MAX_NETWORKS_PER_CLASS environment variable),
     using standardized naming convention (user_defined_feed_1, _2, _3, etc.).
     """
     
-    MAX_NETWORKS_PER_CLASS = 250
     CLASS_NAME_PREFIX = "user_defined_feed"
     
     def __init__(self, logger: Optional[logging.Logger] = None):
@@ -49,6 +49,10 @@ class NetworkClassManager:
             logger: Optional logger instance (creates new if not provided)
         """
         self.log = logger if logger else get_logger("network_class_manager")
+        
+        # Read MAX_NETWORKS_PER_CLASS from environment, default to 250
+        self.max_networks_per_class = int(os.getenv("MAX_NETWORKS_PER_CLASS", "250"))
+        self.log.info(f"Using MAX_NETWORKS_PER_CLASS={self.max_networks_per_class}")
     
     @staticmethod
     def cidr_to_address_mask(cidr: str) -> Tuple[str, str]:
@@ -80,7 +84,7 @@ class NetworkClassManager:
             raise ValidationError(
                 f"Invalid CIDR notation '{cidr}': {str(e)}",
                 field="network_cidr",
-                expected_type="IPv4 CIDR"
+                value=cidr
             )
     
     def split_into_classes(
@@ -111,18 +115,18 @@ class NetworkClassManager:
             return []
         
         total_networks = len(network_ranges)
-        num_classes = (total_networks + self.MAX_NETWORKS_PER_CLASS - 1) // self.MAX_NETWORKS_PER_CLASS
+        num_classes = (total_networks + self.max_networks_per_class - 1) // self.max_networks_per_class
         
         self.log.info(
             f"Splitting {total_networks} networks into {num_classes} network classes "
-            f"(max {self.MAX_NETWORKS_PER_CLASS} networks per class)"
+            f"(max {self.max_networks_per_class} networks per class)"
         )
         
         classes = []
         
         for class_num in range(1, num_classes + 1):
-            start_idx = (class_num - 1) * self.MAX_NETWORKS_PER_CLASS
-            end_idx = min(start_idx + self.MAX_NETWORKS_PER_CLASS, total_networks)
+            start_idx = (class_num - 1) * self.max_networks_per_class
+            end_idx = min(start_idx + self.max_networks_per_class, total_networks)
             
             class_name = f"{self.CLASS_NAME_PREFIX}_{class_num}"
             class_networks = []
@@ -142,7 +146,7 @@ class NetworkClassManager:
             classes.append(network_class)
             
             self.log.info(
-                f"Created class '{class_name}' with {len(network_class)} networks "
+                f"Prepared class '{class_name}' with {len(network_class)} networks "
                 f"(range: {start_idx}-{end_idx-1})"
             )
         

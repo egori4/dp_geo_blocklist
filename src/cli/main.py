@@ -10,6 +10,7 @@ import csv
 import logging
 from pathlib import Path
 from typing import Optional, List
+from dotenv import load_dotenv
 
 from ..lib.exceptions import ConfigError, GeoIPError, NetworkError, ValidationError, StateError
 from ..lib.logging_config import setup_logging, get_logger, log_operation_start, log_operation_success, log_operation_error
@@ -38,6 +39,89 @@ def process_geodb_data(config: Config, logger: logging.Logger) -> List[NetworkRa
     Raises:
         GeoIPError: When processing fails
     """
+    # Check if GeoIP download is enabled
+    if not config.enable_geodb_download:
+        logger.warning("=" * 70)
+        logger.warning("⊘ GEODB DOWNLOAD DISABLED (ENABLE_GEODB_DOWNLOAD=false)")
+        logger.warning("=" * 70)
+        logger.warning("Skipping GeoIP database download - using cached data only")
+        logger.warning("To enable download, set ENABLE_GEODB_DOWNLOAD=true")
+        logger.warning("=" * 70)
+        
+        # Try to use existing cached data
+        try:
+            from pathlib import Path
+            cache_path = Path(config.geodb_cache_dir)
+            
+            # Check if cache directory exists
+            if not cache_path.exists():
+                raise GeoIPError(
+                    f"GeoIP download disabled but cache directory not found: {cache_path}. "
+                    "Set ENABLE_GEODB_DOWNLOAD=true to download database."
+                )
+            
+            # Look for cached CSV files (standardized names)
+            location_file = cache_path / "locations.csv"
+            block_file = cache_path / "blocks_ipv4.csv"
+            
+            # Verify both files exist
+            if not location_file.exists() or not block_file.exists():
+                logger.error(f"Cache directory: {cache_path}")
+                logger.error(f"Location file exists: {location_file.exists()} ({location_file})")
+                logger.error(f"Block file exists: {block_file.exists()} ({block_file})")
+                
+                raise GeoIPError(
+                    f"GeoIP download disabled but cached CSV files not found in {cache_path}. "
+                    f"Expected: locations.csv and blocks_ipv4.csv. "
+                    "Set ENABLE_GEODB_DOWNLOAD=true to download database."
+                )
+            
+            logger.info(f"✓ Found cached location file: {location_file.name} ({location_file.stat().st_size:,} bytes)")
+            logger.info(f"✓ Found cached block file: {block_file.name} ({block_file.stat().st_size:,} bytes)")
+            
+            # Initialize CSV processor
+            csv_processor = CSVProcessor(
+                target_country=config.target_country,
+                target_regions=config.target_regions
+            )
+            
+            file_paths = {
+                'locations': str(location_file),
+                'blocks_ipv4': str(block_file)
+            }
+            
+            # Process cached CSV files based on filter_target_regions setting
+            if config.filter_target_regions:
+                logger.info("Processing cached GeoIP data for target regions...")
+                network_ranges = csv_processor.process_geodb_files(file_paths)
+                
+                stats = csv_processor.get_processing_stats()
+                logger.info(f"✓ Extracted {len(network_ranges)} network ranges from cached data")
+                logger.info(f"  Locations matched: {stats['locations_matched']}/{stats['locations_processed']}")
+                logger.info(f"  Blocks matched: {stats['blocks_matched']}/{stats['blocks_processed']}")
+            else:
+                # FILTER_TARGET_REGIONS=false: Load from previous run's CSV files
+                logger.warning("⊘ REGION FILTERING DISABLED (FILTER_TARGET_REGIONS=false)")
+                logger.warning("Skipping GeoIP processing - will load from previous run's CSV files")
+                logger.warning("To enable region filtering, set FILTER_TARGET_REGIONS=true")
+                
+                # Return empty list - signals main() to load from CSV based on summarization setting
+                # If ENABLE_NETWORK_SUMMARIZATION=true: load data/summarized_network_ranges.csv
+                # If ENABLE_NETWORK_SUMMARIZATION=false: load data/original_network_ranges.csv
+                network_ranges = []
+                logger.info("✓ Will load networks from previous run's CSV files")
+            
+            return network_ranges
+            
+        except GeoIPError:
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error processing cached data: {e}", exc_info=True)
+            raise GeoIPError(
+                f"Failed to process cached GeoIP data: {str(e)}. "
+                f"Set ENABLE_GEODB_DOWNLOAD=true to download fresh database."
+            ) from e
+    
     log_operation_start(
         logger, 
         "GeoIP database processing",
@@ -53,14 +137,32 @@ def process_geodb_data(config: Config, logger: logging.Logger) -> List[NetworkRa
         geodb_client = RadwareGeoDBClient(
             api_url=config.radware_api_url,
             cache_dir=config.geodb_cache_dir,
-            download_timeout=config.download_timeout,
+            api_timeout=config.geodb_api_timeout,
+            download_timeout=config.geodb_download_timeout,
             max_retries=config.max_retries,
             retry_backoff=config.retry_backoff_factor
         )
         
         # Get or download database files
         logger.info("Acquiring GeoIP database files...")
-        file_paths, db_md5 = geodb_client.get_or_download_database()
+        file_paths, db_md5, is_cached = geodb_client.get_or_download_database()
+        
+        # If using cached database (same MD5 as API), skip processing
+        if is_cached:
+            logger.info("=" * 70)
+            logger.info("DATABASE UP-TO-DATE - NO CHANGES DETECTED")
+            logger.info("=" * 70)
+            logger.info(f"✓ Cached database MD5: {db_md5}")
+            logger.info("✓ API returned same MD5 - database unchanged")
+            logger.info("✓ No network processing or DefensePro updates needed")
+            logger.info("Script completed successfully - no actions required")
+            logger.info("=" * 70)
+            
+            # Cleanup old cache files before exiting
+            geodb_client.cleanup_old_cache()
+            
+            # Return empty list to signal no processing needed
+            return []
         
         # Initialize CSV processor
         csv_processor = CSVProcessor(
@@ -68,24 +170,45 @@ def process_geodb_data(config: Config, logger: logging.Logger) -> List[NetworkRa
             target_regions=config.target_regions
         )
         
-        # Process CSV files to extract network ranges
-        logger.info("Processing GeoIP data for target regions...")
-        network_ranges = csv_processor.process_geodb_files(file_paths)
-        
-        # Get processing statistics
-        stats = csv_processor.get_processing_stats()
-        
-        log_operation_success(
-            logger,
-            "GeoIP database processing",
-            database_md5=db_md5,
-            network_ranges_found=len(network_ranges),
-            locations_processed=stats['locations_processed'],
-            locations_matched=stats['locations_matched'],
-            blocks_processed=stats['blocks_processed'],
-            blocks_matched=stats['blocks_matched'],
-            parse_errors=stats['parse_errors']
-        )
+        # Process CSV files to extract network ranges based on filter_target_regions setting
+        if config.filter_target_regions:
+            logger.info("Processing GeoIP data for target regions...")
+            network_ranges = csv_processor.process_geodb_files(file_paths)
+            
+            # Get processing statistics
+            stats = csv_processor.get_processing_stats()
+            
+            log_operation_success(
+                logger,
+                "GeoIP database processing",
+                database_md5=db_md5,
+                network_ranges_found=len(network_ranges),
+                locations_processed=stats['locations_processed'],
+                locations_matched=stats['locations_matched'],
+                blocks_processed=stats['blocks_processed'],
+                blocks_matched=stats['blocks_matched'],
+                parse_errors=stats['parse_errors']
+            )
+        else:
+            # FILTER_TARGET_REGIONS=false: Load from previous run's CSV files
+            logger.warning("=" * 70)
+            logger.warning("⊘ REGION FILTERING DISABLED (FILTER_TARGET_REGIONS=false)")
+            logger.warning("=" * 70)
+            logger.warning("Skipping GeoIP processing - will load from previous run's CSV files")
+            logger.warning("To enable region filtering, set FILTER_TARGET_REGIONS=true")
+            logger.warning("=" * 70)
+            
+            # Return empty list - signals main() to load from CSV based on summarization setting
+            # If ENABLE_NETWORK_SUMMARIZATION=true: load data/summarized_network_ranges.csv
+            # If ENABLE_NETWORK_SUMMARIZATION=false: load data/original_network_ranges.csv
+            network_ranges = []
+            
+            log_operation_success(
+                logger,
+                "GeoIP database processing",
+                database_md5=db_md5,
+                network_ranges_found="N/A (filtering disabled, will load from CSV)"
+            )
         
         # Cleanup old cache files
         geodb_client.cleanup_old_cache()
@@ -101,19 +224,19 @@ def process_geodb_data(config: Config, logger: logging.Logger) -> List[NetworkRa
             geodb_client.close()
 
 
-def push_to_defensepro(config: Config, logger: logging.Logger, network_ranges: List[NetworkRange]) -> None:
+def push_to_defensepro(config: Config, logger: logging.Logger, network_ranges: List[NetworkRange], summarization_result) -> None:
     """
     Push network ranges to multiple DefensePro devices via CyberController.
     
     Workflow:
     1. Cleanup: Delete existing user_defined_feed_* blocklists and network classes
-    2. Summarization: Aggregate networks into optimal supernets
-    3. Create: Push summarized networks to all DefensePro devices
+    2. Create: Push networks to all DefensePro devices
     
     Args:
         config: Application configuration
         logger: Logger instance
-        network_ranges: List of NetworkRange objects to push
+        network_ranges: List of NetworkRange objects to push (already summarized if enabled)
+        summarization_result: Result object from network summarization step
         
     Raises:
         GeoIPError: When DefensePro operations fail critically
@@ -137,7 +260,8 @@ def push_to_defensepro(config: Config, logger: logging.Logger, network_ranges: L
             username=config.cc_username,
             password=config.cc_password,
             verify_ssl=config.verify_ssl,
-            timeout=config.api_timeout,
+            timeout=config.dp_api_timeout,
+            delete_timeout=config.dp_delete_timeout,
             max_retries=config.max_retries,
             retry_backoff=config.retry_backoff_factor,
             logger=logger
@@ -189,87 +313,16 @@ def push_to_defensepro(config: Config, logger: logging.Logger, network_ranges: L
             f"Will proceed with configuration: {', '.join(sorted(devices_cleaned_successfully))}"
         )
         
-        # Export original network ranges before summarization for comparison
-        try:
-            original_output_file = Path("data") / "original_network_ranges.csv"
-            original_output_file.parent.mkdir(parents=True, exist_ok=True)
-            
-            with open(original_output_file, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow(['network_cidr', 'note'])
-                
-                for network in network_ranges:
-                    writer.writerow([network.network_cidr, 'original'])
-            
-            logger.info(f"✓ Exported {len(network_ranges)} original networks to {original_output_file}")
-        except Exception as e:
-            logger.warning(f"Failed to export original networks CSV: {e}")
-        
-        # STEP 1: Network Summarization
+        # STEP 1: Prepare network classes
         logger.info("=" * 70)
-        logger.info("STEP 1: NETWORK SUMMARIZATION")
-        logger.info("=" * 70)
-        logger.info(f"Analyzing {len(network_ranges)} networks for aggregation opportunities...")
-        
-        network_summarizer = NetworkSummarizer(logger=logger)
-        summarization_result = network_summarizer.summarize(network_ranges, validate=True)
-        
-        logger.info(f"✓ {summarization_result}")
-        logger.info(f"  Original networks: {summarization_result.original_count}")
-        logger.info(f"  Summarized networks: {summarization_result.summarized_count}")
-        logger.info(f"  Reduction: {summarization_result.reduction_percentage:.1f}%")
-        
-        # Convert summarized networks back to NetworkRange objects
-        summarized_network_ranges = network_summarizer.summarize_to_network_ranges(
-            network_ranges,
-            validate=True
-        )
-        
-        # Use summarized networks for DefensePro push
-        networks_to_push = summarized_network_ranges
-        logger.info(f"Will push {len(networks_to_push)} summarized networks to DefensePro devices")
-        
-        # Export summarized networks to CSV for audit
-        try:
-            output_file = Path("data") / "summarized_network_ranges.csv"
-            output_file.parent.mkdir(parents=True, exist_ok=True)
-            
-            with open(output_file, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow(['network_cidr', 'note'])
-                
-                for network in networks_to_push:
-                    writer.writerow([network.network_cidr, 'summarized'])
-            
-            logger.info(f"✓ Exported {len(networks_to_push)} summarized networks to {output_file}")
-            
-            # Also export comparison file showing original vs summarized
-            comparison_file = Path("data") / "network_summarization_report.csv"
-            with open(comparison_file, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow(['original_count', 'summarized_count', 'reduction_count', 'reduction_percentage'])
-                writer.writerow([
-                    summarization_result.original_count,
-                    summarization_result.summarized_count,
-                    summarization_result.original_count - summarization_result.summarized_count,
-                    f"{summarization_result.reduction_percentage:.2f}%"
-                ])
-            
-            logger.info(f"✓ Exported summarization report to {comparison_file}")
-            
-        except Exception as e:
-            logger.warning(f"Failed to export CSV files: {e}")
-        
-        # STEP 2: Prepare network classes
-        logger.info("=" * 70)
-        logger.info("STEP 2: PREPARING NETWORK CLASSES")
+        logger.info("STEP 1: PREPARING NETWORK CLASSES")
         logger.info("=" * 70)
         network_class_manager = NetworkClassManager(logger=logger)
         
         # Split networks into classes (max 250 per class)
-        network_classes = network_class_manager.split_into_classes(networks_to_push)
+        network_classes = network_class_manager.split_into_classes(network_ranges)
         logger.info(
-            f"Split {len(networks_to_push)} networks into {len(network_classes)} network classes "
+            f"Split {len(network_ranges)} networks into {len(network_classes)} network classes "
             f"to be pushed to {len(devices_cleaned_successfully)} DefensePro device(s)"
         )
         
@@ -351,6 +404,26 @@ def push_to_defensepro(config: Config, logger: logging.Logger, network_ranges: L
                     logger.warning(
                         f"[{dp_ip}] Encountered {len(blocklist_results['errors'])} errors during blocklist creation"
                     )
+                
+                # STEP 3: Apply policy updates to commit configuration changes
+                logger.info(f"[{dp_ip}] Applying policy updates")
+                try:
+                    policy_result = defensepro_client.update_policies(dp_ip)
+                    device_result["policy_update"] = policy_result
+                    
+                    logger.info(f"[{dp_ip}] ✓ Policy updates applied successfully")
+                    
+                    # Log any warnings from policy update
+                    if policy_result.get("warnings"):
+                        for warning in policy_result["warnings"]:
+                            logger.warning(f"[{dp_ip}] Policy update warning: {warning}")
+                    
+                except Exception as e:
+                    policy_error = f"Failed to apply policy updates: {str(e)}"
+                    device_result["policy_update_error"] = policy_error
+                    logger.error(f"[{dp_ip}] ✗ {policy_error}")
+                    # Don't fail the entire operation - configuration is still saved
+                    logger.warning(f"[{dp_ip}] Configuration changes saved but not yet active - manual policy update may be required")
                 
                 # Mark device as successful if no critical errors
                 device_errors = len(class_results['errors']) + len(blocklist_results['errors'])
@@ -462,6 +535,12 @@ def main() -> int:
     Returns:
         Exit code (0 for success, non-zero for error)
     """
+    # Load environment variables from .env file
+    # Look for .env in the project root directory (2 levels up from this file)
+    # override=True ensures .env values take precedence over system environment variables
+    env_path = Path(__file__).parent.parent.parent / '.env'
+    load_dotenv(dotenv_path=env_path, override=True)
+    
     logger: Optional[logging.Logger] = None
     
     try:
@@ -483,6 +562,44 @@ def main() -> int:
         # User Story 1: Process GeoIP data to extract network ranges
         network_ranges = process_geodb_data(config, logger)
         
+        # If filtering disabled and no networks returned, load from previous run's CSV
+        # This happens when FILTER_TARGET_REGIONS=false (regardless of ENABLE_GEODB_DOWNLOAD)
+        if not network_ranges and not config.filter_target_regions:
+            logger.info("=" * 70)
+            logger.info("LOADING NETWORKS FROM PREVIOUS RUN'S CSV")
+            logger.info("=" * 70)
+            
+            # Always load from original_network_ranges.csv
+            # The summarization step will handle whether to summarize or use as-is
+            csv_file = Path("data") / "original_network_ranges.csv"
+            logger.info("Loading original networks from previous run")
+            logger.info("Summarization will be applied in next step if enabled")
+            
+            if not csv_file.exists():
+                raise GeoIPError(
+                    f"Region filtering disabled but CSV file not found: {csv_file}. "
+                    f"Enable FILTER_TARGET_REGIONS=true to process GeoIP database, or "
+                    f"ensure CSV file exists from a previous run."
+                )
+            
+            logger.info(f"Loading networks from: {csv_file}")
+            
+            # Load networks from CSV
+            network_ranges = []
+            with open(csv_file, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    # Create NetworkRange objects from CSV
+                    # Note: CSV only contains network_cidr, so we use minimal parameters
+                    network_ranges.append(NetworkRange(
+                        network_cidr=row['network_cidr'],
+                        geoname_id=None,  # Not available from simplified CSV
+                        latitude=None,
+                        longitude=None
+                    ))
+            
+            logger.info(f"✓ Loaded {len(network_ranges)} networks from {csv_file.name}")
+        
         if not network_ranges:
             logger.warning("No network ranges found for target criteria")
             logger.info("=== GeoIP Custom IP Blocker Finished (No Results) ===")
@@ -496,8 +613,138 @@ def main() -> int:
         for i, network_range in enumerate(network_ranges[:sample_size]):
             logger.info(f"  {i+1}. {network_range}")
         
-        # User Story 2 & 3: Push network ranges to DefensePro
-        push_to_defensepro(config, logger, network_ranges)
+        # Export original network ranges to CSV (before any summarization)
+        logger.info("=" * 70)
+        logger.info("EXPORTING ORIGINAL NETWORKS")
+        logger.info("=" * 70)
+        try:
+            original_output_file = Path("data") / "original_network_ranges.csv"
+            original_output_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(original_output_file, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(['network_cidr', 'note'])
+                
+                for network in network_ranges:
+                    writer.writerow([network.network_cidr, 'original'])
+            
+            logger.info(f"✓ Exported {len(network_ranges)} original networks to {original_output_file}")
+        except Exception as e:
+            logger.warning(f"Failed to export original networks CSV: {e}")
+        
+        # STEP: Network Summarization
+        logger.info("=" * 70)
+        logger.info("NETWORK SUMMARIZATION")
+        logger.info("=" * 70)
+        
+        # Check if network summarization is enabled
+        if not config.enable_network_summarization:
+            logger.warning("⊘ NETWORK SUMMARIZATION DISABLED (ENABLE_NETWORK_SUMMARIZATION=false)")
+            logger.warning("Using original filtered networks without summarization")
+            logger.warning(f"Will use {len(network_ranges)} original networks")
+            logger.warning("To enable summarization, set ENABLE_NETWORK_SUMMARIZATION=true")
+            
+            networks_to_push = network_ranges
+            
+            # Create a mock summarization result for logging
+            from collections import namedtuple
+            SummarizationResult = namedtuple('SummarizationResult', ['original_count', 'summarized_count', 'reduction_percentage'])
+            summarization_result = SummarizationResult(
+                original_count=len(network_ranges),
+                summarized_count=len(network_ranges),
+                reduction_percentage=0.0
+            )
+            
+            # Export original networks as the "working set"
+            try:
+                output_file = Path("data") / "working_network_ranges.csv"
+                output_file.parent.mkdir(parents=True, exist_ok=True)
+                
+                with open(output_file, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['network_cidr', 'note'])
+                    
+                    for network in networks_to_push:
+                        writer.writerow([network.network_cidr, 'original (summarization disabled)'])
+                
+                logger.info(f"✓ Exported {len(networks_to_push)} original networks to {output_file}")
+            except Exception as e:
+                logger.warning(f"Failed to export working networks CSV: {e}")
+        
+        else:
+            # Summarization enabled - perform aggregation
+            logger.info(f"Analyzing {len(network_ranges)} networks for aggregation opportunities...")
+            
+            network_summarizer = NetworkSummarizer(logger=logger)
+            
+            # Summarize networks and convert to NetworkRange objects (single operation)
+            networks_to_push = network_summarizer.summarize_to_network_ranges(
+                network_ranges,
+                validate=True
+            )
+            
+            # Create summarization result for statistics (without re-running summarization)
+            original_count = len(network_ranges)
+            summarized_count = len(networks_to_push)
+            reduction_percentage = ((original_count - summarized_count) / original_count * 100) if original_count > 0 else 0.0
+            
+            from collections import namedtuple
+            SummarizationResult = namedtuple('SummarizationResult', ['original_count', 'summarized_count', 'reduction_percentage'])
+            summarization_result = SummarizationResult(
+                original_count=original_count,
+                summarized_count=summarized_count,
+                reduction_percentage=reduction_percentage
+            )
+            
+            logger.info(f"✓ Summarization complete")
+            logger.info(f"  Original networks: {summarization_result.original_count}")
+            logger.info(f"  Summarized networks: {summarization_result.summarized_count}")
+            logger.info(f"  Reduction: {summarization_result.reduction_percentage:.1f}%")
+            logger.info(f"Will use {len(networks_to_push)} summarized networks")
+            
+            # Export summarized networks to CSV for audit
+            try:
+                output_file = Path("data") / "summarized_network_ranges.csv"
+                output_file.parent.mkdir(parents=True, exist_ok=True)
+                
+                with open(output_file, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['network_cidr', 'note'])
+                    
+                    for network in networks_to_push:
+                        writer.writerow([network.network_cidr, 'summarized'])
+                
+                logger.info(f"✓ Exported {len(networks_to_push)} summarized networks to {output_file}")
+                
+                # Also export comparison file showing original vs summarized
+                comparison_file = Path("data") / "network_summarization_report.csv"
+                with open(comparison_file, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['original_count', 'summarized_count', 'reduction_count', 'reduction_percentage'])
+                    writer.writerow([
+                        summarization_result.original_count,
+                        summarization_result.summarized_count,
+                        summarization_result.original_count - summarization_result.summarized_count,
+                        f"{summarization_result.reduction_percentage:.2f}%"
+                    ])
+                
+                logger.info(f"✓ Exported summarization report to {comparison_file}")
+                
+            except Exception as e:
+                logger.warning(f"Failed to export CSV files: {e}")
+        
+        # User Story 2 & 3: Push network ranges to DefensePro (if enabled)
+        if config.configure_defensepro:
+            push_to_defensepro(config, logger, networks_to_push, summarization_result)
+        else:
+            logger.warning("=" * 70)
+            logger.warning("⊘ DEFENSEPRO CONFIGURATION DISABLED (CONFIGURE_DEFENSEPRO=false)")
+            logger.warning("=" * 70)
+            logger.warning("Skipping DefensePro device configuration")
+            logger.warning(f"Network ranges extracted and processed: {len(networks_to_push)} networks")
+            logger.warning("CSV files exported for manual review in data/ directory")
+            logger.warning("To enable DefensePro configuration, set CONFIGURE_DEFENSEPRO=true")
+            logger.warning("=" * 70)
         
         logger.info("=== GeoIP Custom IP Blocker Finished Successfully ===")
         
