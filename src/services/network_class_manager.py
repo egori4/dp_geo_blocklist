@@ -7,6 +7,8 @@ classes (max 250 networks per class) and managing their creation on DefensePro d
 
 import logging
 import ipaddress
+import time
+import os
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 
@@ -155,6 +157,9 @@ class NetworkClassManager:
         """
         Create all network classes and their network groups on DefensePro.
         
+        Supports both sequential and parallel execution modes based on environment
+        configuration (PARALLEL_EXECUTION and PARALLEL_WORKERS).
+        
         Args:
             client: DefenseProClient instance for API operations
             dp_ip: DefensePro device IP address
@@ -183,8 +188,14 @@ class NetworkClassManager:
                 "errors": []
             }
         
+        # Read configuration from environment
+        parallel_execution = os.getenv("PARALLEL_EXECUTION", "true").lower() == "true"
+        parallel_workers = int(os.getenv("PARALLEL_WORKERS", "10"))
+        
+        execution_mode = "parallel" if parallel_execution else "sequential"
         self.log.info(
-            f"Creating {len(network_classes)} network classes on DefensePro {dp_ip}"
+            f"Creating {len(network_classes)} network classes on DefensePro {dp_ip} "
+            f"(mode: {execution_mode}" + (f", workers: {parallel_workers}" if parallel_execution else "") + ")"
         )
         
         classes_attempted = 0
@@ -194,57 +205,97 @@ class NetworkClassManager:
         groups_failed = 0
         errors = []
         
+        start_time = time.time()
+        
         for network_class in network_classes:
             classes_attempted += 1
-            class_errors = 0
+            class_start_time = time.time()
             
             self.log.info(
                 f"Processing network class '{network_class.name}' "
-                f"with {len(network_class)} networks"
+                f"with {len(network_class)} networks ({execution_mode} mode)"
             )
             
-            for index, (address, mask) in enumerate(network_class.networks):
-                groups_attempted += 1
+            if parallel_execution:
+                # Parallel execution using ThreadPoolExecutor
+                networks_data = [
+                    (index, address, mask)
+                    for index, (address, mask) in enumerate(network_class.networks)
+                ]
                 
-                try:
-                    client.create_network_group(
-                        dp_ip=dp_ip,
-                        network_class_name=network_class.name,
-                        network_index=index,
-                        network_address=address,
-                        network_mask=mask
-                    )
-                    groups_successful += 1
-                    
-                    # Log progress for large classes
-                    if (index + 1) % 50 == 0:
-                        self.log.info(
-                            f"  Progress: {index + 1}/{len(network_class)} networks created "
-                            f"in '{network_class.name}'"
-                        )
-                    
-                except Exception as e:
-                    groups_failed += 1
-                    class_errors += 1
-                    error_msg = (
-                        f"Failed to create network group '{network_class.name}[{index}]' "
-                        f"({address}/{mask}): {str(e)}"
-                    )
-                    errors.append(error_msg)
-                    self.log.error(error_msg)
-            
-            # Mark class as successful if all networks were created
-            if class_errors == 0:
-                classes_successful += 1
+                result = client.create_network_groups_parallel(
+                    dp_ip=dp_ip,
+                    network_class_name=network_class.name,
+                    networks=networks_data,
+                    max_workers=parallel_workers
+                )
+                
+                groups_attempted += len(network_class)
+                groups_successful += result["created"]
+                groups_failed += result["failed"]
+                errors.extend(result["errors"])
+                
+                if result["failed"] == 0:
+                    classes_successful += 1
+                
+                class_elapsed = time.time() - class_start_time
+                rate = result["created"] / class_elapsed if class_elapsed > 0 else 0
                 self.log.info(
-                    f"Successfully created all {len(network_class)} networks "
-                    f"in class '{network_class.name}'"
+                    f"Class '{network_class.name}' completed in {class_elapsed:.2f}s (parallel mode, {parallel_workers} workers): "
+                    f"{result['created']} succeeded, {result['failed']} failed ({rate:.1f} networks/sec)"
                 )
+                
             else:
-                self.log.warning(
-                    f"Class '{network_class.name}' completed with {class_errors} errors "
-                    f"({groups_successful} successful, {class_errors} failed)"
+                # Sequential execution (original implementation)
+                class_errors = 0
+                class_successes = 0
+                
+                for index, (address, mask) in enumerate(network_class.networks):
+                    groups_attempted += 1
+                    
+                    try:
+                        client.create_network_group(
+                            dp_ip=dp_ip,
+                            network_class_name=network_class.name,
+                            network_index=index,
+                            network_address=address,
+                            network_mask=mask
+                        )
+                        groups_successful += 1
+                        class_successes += 1
+                        
+                        # Log progress for large classes
+                        if (index + 1) % 50 == 0:
+                            elapsed_so_far = time.time() - class_start_time
+                            rate = (index + 1) / elapsed_so_far if elapsed_so_far > 0 else 0
+                            self.log.info(
+                                f"  Progress: {index + 1}/{len(network_class)} networks created "
+                                f"in '{network_class.name}' ({elapsed_so_far:.1f}s, {rate:.1f} networks/sec)"
+                            )
+                        
+                    except Exception as e:
+                        groups_failed += 1
+                        class_errors += 1
+                        error_msg = (
+                            f"Failed to create network group '{network_class.name}[{index}]' "
+                            f"({address}/{mask}): {str(e)}"
+                        )
+                        errors.append(error_msg)
+                        self.log.error(error_msg)
+                
+                # Mark class as successful if all networks were created
+                if class_errors == 0:
+                    classes_successful += 1
+                
+                class_elapsed = time.time() - class_start_time
+                rate = class_successes / class_elapsed if class_elapsed > 0 else 0
+                self.log.info(
+                    f"Class '{network_class.name}' completed in {class_elapsed:.2f}s (sequential mode): "
+                    f"{class_successes} succeeded, {class_errors} failed ({rate:.1f} networks/sec)"
                 )
+        
+        total_elapsed = time.time() - start_time
+        overall_rate = groups_successful / total_elapsed if total_elapsed > 0 else 0
         
         summary = {
             "classes_attempted": classes_attempted,
@@ -256,9 +307,9 @@ class NetworkClassManager:
         }
         
         self.log.info(
-            f"Network class creation complete: "
+            f"Network class creation complete in {total_elapsed:.2f}s ({execution_mode} mode): "
             f"{classes_successful}/{classes_attempted} classes successful, "
-            f"{groups_successful}/{groups_attempted} network groups created"
+            f"{groups_successful}/{groups_attempted} network groups created ({overall_rate:.1f} networks/sec)"
         )
         
         if errors:

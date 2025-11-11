@@ -155,6 +155,56 @@ def push_to_defensepro(config: Config, logger: logging.Logger, network_ranges: L
             dp_ips=config.dp_ips
         )
         
+        # Identify devices with cleanup errors - skip configuration for these devices only
+        devices_with_cleanup_errors = set()
+        devices_cleaned_successfully = []
+        
+        for dp_ip, result in cleanup_results.items():
+            if result.errors:
+                devices_with_cleanup_errors.add(dp_ip)
+                logger.warning(
+                    f"✗ [{dp_ip}] Cleanup encountered {len(result.errors)} errors. "
+                    f"Will skip configuration for this device."
+                )
+                for error in result.errors[:3]:  # Show first 3 errors
+                    logger.warning(f"    - {error}")
+                if len(result.errors) > 3:
+                    logger.warning(f"    ... and {len(result.errors) - 3} more errors")
+            else:
+                devices_cleaned_successfully.append(dp_ip)
+                logger.info(f"✓ [{dp_ip}] Cleanup completed successfully")
+        
+        if devices_with_cleanup_errors:
+            logger.warning(
+                f"⚠ Cleanup failed on {len(devices_with_cleanup_errors)} device(s). "
+                f"These devices will be skipped during configuration: {', '.join(sorted(devices_with_cleanup_errors))}"
+            )
+        
+        if not devices_cleaned_successfully:
+            logger.error("✗ Cleanup failed on ALL devices. Cannot proceed with configuration.")
+            raise SystemExit(1)
+        
+        logger.info(
+            f"✓ Cleanup successful on {len(devices_cleaned_successfully)} device(s). "
+            f"Will proceed with configuration: {', '.join(sorted(devices_cleaned_successfully))}"
+        )
+        
+        # Export original network ranges before summarization for comparison
+        try:
+            original_output_file = Path("data") / "original_network_ranges.csv"
+            original_output_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(original_output_file, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(['network_cidr', 'note'])
+                
+                for network in network_ranges:
+                    writer.writerow([network.network_cidr, 'original'])
+            
+            logger.info(f"✓ Exported {len(network_ranges)} original networks to {original_output_file}")
+        except Exception as e:
+            logger.warning(f"Failed to export original networks CSV: {e}")
+        
         # STEP 1: Network Summarization
         logger.info("=" * 70)
         logger.info("STEP 1: NETWORK SUMMARIZATION")
@@ -220,7 +270,7 @@ def push_to_defensepro(config: Config, logger: logging.Logger, network_ranges: L
         network_classes = network_class_manager.split_into_classes(networks_to_push)
         logger.info(
             f"Split {len(networks_to_push)} networks into {len(network_classes)} network classes "
-            f"to be pushed to {len(config.dp_ips)} DefensePro devices"
+            f"to be pushed to {len(devices_cleaned_successfully)} DefensePro device(s)"
         )
         
         # Track overall statistics across all devices
@@ -233,10 +283,10 @@ def push_to_defensepro(config: Config, logger: logging.Logger, network_ranges: L
         logger.info("STEP 3: PUSHING TO DEFENSEPRO DEVICES")
         logger.info("=" * 70)
         
-        # Iterate over each DefensePro device
-        for device_num, dp_ip in enumerate(config.dp_ips, start=1):
+        # Iterate over each DefensePro device that cleaned successfully
+        for device_num, dp_ip in enumerate(devices_cleaned_successfully, start=1):
             logger.info("=" * 70)
-            logger.info(f"Device {device_num}/{len(config.dp_ips)}: {dp_ip}")
+            logger.info(f"Device {device_num}/{len(devices_cleaned_successfully)}: {dp_ip}")
             logger.info("=" * 70)
             
             device_result = {
@@ -244,10 +294,23 @@ def push_to_defensepro(config: Config, logger: logging.Logger, network_ranges: L
                 "device_num": device_num,
                 "success": False,
                 "class_results": {},
-                "blocklist_results": {}
+                "blocklist_results": {},
+                "locked": False
             }
             
             try:
+                # Lock device before making any configuration changes
+                logger.info(f"[{dp_ip}] Locking device for configuration changes...")
+                try:
+                    defensepro_client.lock_device(dp_ip)
+                    device_result["locked"] = True
+                except Exception as e:
+                    logger.error(f"[{dp_ip}] ✗ Failed to lock device: {e}")
+                    total_devices_failed += 1
+                    device_result["error"] = f"Failed to lock device: {str(e)}"
+                    all_device_results.append(device_result)
+                    continue  # Skip this device if we can't lock it
+                
                 # Create network classes on this DefensePro device
                 logger.info(f"Creating network classes on DefensePro {dp_ip}...")
                 class_results = network_class_manager.create_network_classes(
@@ -303,6 +366,14 @@ def push_to_defensepro(config: Config, logger: logging.Logger, network_ranges: L
                 total_devices_failed += 1
                 device_result["error"] = str(e)
                 logger.error(f"[{dp_ip}] ✗ Failed to configure DefensePro device: {e}")
+            finally:
+                # Always unlock device, even if errors occurred
+                if device_result["locked"]:
+                    logger.info(f"[{dp_ip}] Unlocking device...")
+                    try:
+                        defensepro_client.unlock_device(dp_ip)
+                    except Exception as e:
+                        logger.error(f"[{dp_ip}] ✗ Failed to unlock device: {e}")
             
             all_device_results.append(device_result)
         
@@ -340,7 +411,16 @@ def push_to_defensepro(config: Config, logger: logging.Logger, network_ranges: L
         logger.info(f"  Network groups created: {total_groups}")
         logger.info(f"  Blocklists created: {total_blocklists}")
         
-        if total_devices_successful == len(config.dp_ips):
+        # Calculate total devices attempted (cleaned successfully + skipped due to cleanup errors)
+        total_devices_attempted = len(devices_cleaned_successfully) + len(devices_with_cleanup_errors)
+        
+        if devices_with_cleanup_errors:
+            logger.warning(
+                f"  Devices skipped due to cleanup errors: {len(devices_with_cleanup_errors)} "
+                f"({', '.join(sorted(devices_with_cleanup_errors))})"
+            )
+        
+        if total_devices_successful == len(devices_cleaned_successfully):
             log_operation_success(
                 logger,
                 "DefensePro integration",
@@ -357,10 +437,14 @@ def push_to_defensepro(config: Config, logger: logging.Logger, network_ranges: L
         elif total_devices_successful > 0:
             logger.warning(
                 f"DefensePro integration partially successful: "
-                f"{total_devices_successful}/{len(config.dp_ips)} devices configured"
+                f"{total_devices_successful}/{total_devices_attempted} devices configured "
+                f"({len(devices_with_cleanup_errors)} skipped due to cleanup errors)"
             )
         else:
-            raise GeoIPError(f"Failed to configure any DefensePro devices ({len(config.dp_ips)} attempted)")
+            raise GeoIPError(
+                f"Failed to configure any DefensePro devices "
+                f"({total_devices_attempted} attempted, {len(devices_with_cleanup_errors)} skipped due to cleanup errors)"
+            )
         
     except (NetworkError, ValidationError) as e:
         log_operation_error(logger, "DefensePro integration", e)

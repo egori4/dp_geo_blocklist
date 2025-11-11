@@ -134,7 +134,7 @@ class NetworkRange:
     correlated with location data.
     """
     network_cidr: str
-    geoname_id: int
+    geoname_id: Optional[int] = None
     registered_country_geoname_id: Optional[int] = None
     represented_country_geoname_id: Optional[int] = None
     is_anonymous_proxy: bool = False
@@ -152,8 +152,8 @@ class NetworkRange:
         except ValidationError as e:
             raise ValidationError(f"Invalid network CIDR: {e.message}", "network_cidr", self.network_cidr)
         
-        # Validate geoname_id
-        if self.geoname_id <= 0:
+        # Validate geoname_id if provided
+        if self.geoname_id is not None and self.geoname_id <= 0:
             raise ValidationError("geoname_id must be positive", "geoname_id", str(self.geoname_id))
         
         # Validate optional coordinates

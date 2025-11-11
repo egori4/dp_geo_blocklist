@@ -226,4 +226,32 @@ docker start geo-ip-blocker
 
 ---
 
-**Version**: 1.0.0 | **Created**: 2025-10-15 | **Status**: Implementation Ready
+## 📝 Version History
+
+### Version 1.1.0 (2025-11-10) - Performance & Reliability Update
+
+**Major Enhancements:**
+- **Parallel Network Creation**: upto 10x times performance improvement with configurable ThreadPoolExecutor (default: 10 workers)
+- **Bulk Deletion API**: Reduced cleanup time from N API calls to 1 per network class
+- **Transaction Rollback Recovery**: Automatic detection and recovery from DefensePro transaction errors
+- **Original Network Export**: Added `original_network_ranges.csv` for pre-summarization audit trail
+
+**Bug Fixes:**
+- Fixed infinite retry loop respecting MAX_RETRIES=3
+- Fixed M_00386 error handling to differentiate rollback recovery vs. genuine duplicates
+- Fixed per-device cleanup error handling to skip only failed devices
+- Fixed DELETE operation timeout (30s → 120s for 250-network bulk deletions)
+
+**Configuration:**
+- Added `DELETE_TIMEOUT=120` for bulk operations
+- Added `PARALLEL_EXECUTION=true/false` to toggle execution modes
+- Added `PARALLEL_WORKERS=10` (range: 1-50) for concurrency control
+
+**Technical Details:**
+- Retry logic enhanced with transaction state tracking (`had_transaction_rollback` flag)
+- Per-class and overall timing measurements with networks/sec metrics
+- Comprehensive DEBUG logging for troubleshooting bulk operations
+
+---
+
+**Version**: 1.0.0 | **Created**: 2025-10-15 |

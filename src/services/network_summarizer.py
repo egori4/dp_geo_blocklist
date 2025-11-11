@@ -95,8 +95,7 @@ class NetworkSummarizer:
                 postal_code=None,
                 latitude=None,
                 longitude=None,
-                accuracy_radius=None,
-                is_anycast=False
+                accuracy_radius=None
             )
             for network in networks
         ]
