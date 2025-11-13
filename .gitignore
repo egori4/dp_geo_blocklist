@@ -34,6 +34,8 @@ Thumbs.db
 # Docker
 *.db
 *.sqlite3
+*.tar
+*.tar.gz
 docker-compose.override.yml
 
 # Test output
@@ -46,3 +48,4 @@ pytest_cache/
 network_ranges_output.csv
 tmp/
 data/
+

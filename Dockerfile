@@ -31,8 +31,8 @@ CMD ["python", "-m", "src.cli.main"]
 
 # Labels for container metadata
 LABEL maintainer="GeoIP Custom IP Blocker"
-LABEL version="1.0.0"
-LABEL description="Containerized Python application for GeoIP-based IP range synchronization"
+LABEL version="1.3.0"
+LABEL description="Containerized Python application for GeoIP-based IP range blocking"
 
 # Expose volume for persistent data
 VOLUME ["/app/data"]
