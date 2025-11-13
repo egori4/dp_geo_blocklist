@@ -28,7 +28,7 @@ class Config:
 
     # Target Regions for IP Range Identification
     target_country: str
-    target_regions: List[str]
+    target_regions: Optional[List[str]]  # Optional: If None, filter by country only
 
     # Logging Configuration
     log_level: str
@@ -41,6 +41,7 @@ class Config:
     state_file: str
     history_file: str
     geodb_cache_dir: str
+    cache_retention_count: int  # Number of cache versions to keep
 
     # DefensePro Timeout Configuration
     dp_api_timeout: int
@@ -83,10 +84,10 @@ class Config:
             # Required Radware GeoIP source
             radware_api_url = cls._get_required_env("RADWARE_API_URL")
 
-            # Required target regions
+            # Required target country, optional target regions
             target_country = cls._get_required_env("TARGET_COUNTRY")
-            target_regions_str = cls._get_required_env("TARGET_REGIONS")
-            target_regions = [region.strip() for region in target_regions_str.split(",")]
+            target_regions_str = os.getenv("TARGET_REGIONS", "").strip()
+            target_regions = [region.strip() for region in target_regions_str.split(",") if region.strip()] if target_regions_str else None
 
             # Logging configuration with defaults
             log_level = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -99,6 +100,7 @@ class Config:
             state_file = os.getenv("STATE_FILE", "/app/data/ip_state.json")
             history_file = os.getenv("HISTORY_FILE", "/app/data/ip_history.jsonl")
             geodb_cache_dir = os.getenv("GEODB_CACHE_DIR", "/app/data/geodb_cache")
+            cache_retention_count = cls._get_int_env("CACHE_RETENTION_COUNT", 3)
 
             # DefensePro timeout configuration with defaults
             dp_api_timeout = cls._get_int_env("DP_API_TIMEOUT", 30)
@@ -130,6 +132,7 @@ class Config:
                 geodb_download_timeout=geodb_download_timeout,
                 max_retries=max_retries,
                 retry_backoff_factor=retry_backoff_factor,
+                cache_retention_count=cache_retention_count,
             )
 
             return cls(
@@ -149,6 +152,7 @@ class Config:
                 state_file=state_file,
                 history_file=history_file,
                 geodb_cache_dir=geodb_cache_dir,
+                cache_retention_count=cache_retention_count,
                 dp_api_timeout=dp_api_timeout,
                 dp_delete_timeout=dp_delete_timeout,
                 geodb_api_timeout=geodb_api_timeout,
@@ -217,7 +221,7 @@ class Config:
     def _validate_config(
         log_level: str,
         target_country: str,
-        target_regions: List[str],
+        target_regions: Optional[List[str]],
         dp_ips: List[str],
         dp_api_timeout: int,
         dp_delete_timeout: int,
@@ -225,6 +229,7 @@ class Config:
         geodb_download_timeout: int,
         max_retries: int,
         retry_backoff_factor: float,
+        cache_retention_count: int,
     ) -> None:
         """Validate configuration values for correctness."""
         # Validate log level
@@ -244,12 +249,12 @@ class Config:
                 "2-character ISO code"
             )
 
-        # Validate target regions
-        if not target_regions:
+        # Validate target regions (optional - if provided, cannot be empty)
+        if target_regions is not None and len(target_regions) == 0:
             raise ConfigError(
-                "TARGET_REGIONS cannot be empty",
+                "TARGET_REGIONS cannot be empty string - either provide subdivision codes or omit the variable entirely",
                 "TARGET_REGIONS", 
-                "comma-separated region codes"
+                "comma-separated region codes or omit variable"
             )
         
         # Validate DefensePro IPs
@@ -312,14 +317,23 @@ class Config:
                 "RETRY_BACKOFF_FACTOR",
                 "positive float"
             )
+        
+        # Validate cache retention count
+        if cache_retention_count < 1:
+            raise ConfigError(
+                f"Cache retention count must be at least 1, got {cache_retention_count}",
+                "CACHE_RETENTION_COUNT",
+                "positive integer (minimum 1)"
+            )
 
     def __repr__(self) -> str:
         """Safe representation that doesn't expose sensitive information."""
+        regions_str = ','.join(self.target_regions) if self.target_regions else 'ALL (country-level only)'
         return (
             f"Config(cc_ip='{self.cc_ip}', "
             f"dp_ips={self.dp_ips} ({len(self.dp_ips)} devices), "
             f"target_country='{self.target_country}', "
-            f"target_regions={self.target_regions}, "
+            f"target_regions=[{regions_str}], "
             f"log_level='{self.log_level}', "
             f"api_timeout={self.dp_api_timeout}, "
             f"geodb_download={self.enable_geodb_download}, "

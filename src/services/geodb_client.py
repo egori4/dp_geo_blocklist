@@ -398,8 +398,9 @@ class RadwareGeoDBClient:
                 target_path = cached_dir / f"{file_type}.csv"
                 
                 # Copy file to cache
+                # shutil.copyfile is efficient (chunked reads) and doesn't preserve metadata (avoids permission issues)
                 import shutil
-                shutil.copy2(source_path, target_path)
+                shutil.copyfile(source_path, target_path)
                 cached_files[file_type] = str(target_path)
                 
                 self.logger.info(f"Cached {file_type} file: {target_path}")

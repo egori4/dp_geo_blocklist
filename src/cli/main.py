@@ -60,9 +60,23 @@ def process_geodb_data(config: Config, logger: logging.Logger) -> List[NetworkRa
                     "Set ENABLE_GEODB_DOWNLOAD=true to download database."
                 )
             
-            # Look for cached CSV files (standardized names)
-            location_file = cache_path / "locations.csv"
-            block_file = cache_path / "blocks_ipv4.csv"
+            # Look for cached CSV files in MD5-hashed subdirectories (e.g., geodb_626e97a28499c649d28ec8db4662f27d)
+            # Find the most recent geodb_* directory
+            geodb_dirs = sorted(cache_path.glob("geodb_*"), key=lambda p: p.stat().st_mtime, reverse=True)
+            
+            if not geodb_dirs:
+                raise GeoIPError(
+                    f"GeoIP download disabled but no cached database found in {cache_path}. "
+                    f"Expected subdirectories like 'geodb_<md5>/' with locations.csv and blocks_ipv4.csv. "
+                    "Set ENABLE_GEODB_DOWNLOAD=true to download database."
+                )
+            
+            # Use the most recent cache directory
+            cached_db_dir = geodb_dirs[0]
+            logger.info(f"Using cached database: {cached_db_dir.name}")
+            
+            location_file = cached_db_dir / "locations.csv"
+            block_file = cached_db_dir / "blocks_ipv4.csv"
             
             # Verify both files exist
             if not location_file.exists() or not block_file.exists():
@@ -158,9 +172,6 @@ def process_geodb_data(config: Config, logger: logging.Logger) -> List[NetworkRa
             logger.info("Script completed successfully - no actions required")
             logger.info("=" * 70)
             
-            # Cleanup old cache files before exiting
-            geodb_client.cleanup_old_cache()
-            
             # Return empty list to signal no processing needed
             return []
         
@@ -210,9 +221,6 @@ def process_geodb_data(config: Config, logger: logging.Logger) -> List[NetworkRa
                 network_ranges_found="N/A (filtering disabled, will load from CSV)"
             )
         
-        # Cleanup old cache files
-        geodb_client.cleanup_old_cache()
-        
         return network_ranges
         
     except (NetworkError, ValidationError, StateError) as e:
@@ -221,6 +229,11 @@ def process_geodb_data(config: Config, logger: logging.Logger) -> List[NetworkRa
         
     finally:
         if geodb_client:
+            # Cleanup old cache files even if processing was interrupted or failed
+            try:
+                geodb_client.cleanup_old_cache(keep_count=config.cache_retention_count)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup old cache during shutdown: {str(e)}")
             geodb_client.close()
 
 
@@ -655,21 +668,21 @@ def main() -> int:
                 reduction_percentage=0.0
             )
             
-            # Export original networks as the "working set"
-            try:
-                output_file = Path("data") / "working_network_ranges.csv"
-                output_file.parent.mkdir(parents=True, exist_ok=True)
+            # # Export original networks as the "working set"
+            # try:
+            #     output_file = Path("data") / "working_network_ranges.csv"
+            #     output_file.parent.mkdir(parents=True, exist_ok=True)
                 
-                with open(output_file, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.writer(f)
-                    writer.writerow(['network_cidr', 'note'])
+            #     with open(output_file, 'w', newline='', encoding='utf-8') as f:
+            #         writer = csv.writer(f)
+            #         writer.writerow(['network_cidr', 'note'])
                     
-                    for network in networks_to_push:
-                        writer.writerow([network.network_cidr, 'original (summarization disabled)'])
+            #         for network in networks_to_push:
+            #             writer.writerow([network.network_cidr, 'original (summarization disabled)'])
                 
-                logger.info(f"✓ Exported {len(networks_to_push)} original networks to {output_file}")
-            except Exception as e:
-                logger.warning(f"Failed to export working networks CSV: {e}")
+            #     logger.info(f"✓ Exported {len(networks_to_push)} original networks to {output_file}")
+            # except Exception as e:
+            #     logger.warning(f"Failed to export working networks CSV: {e}")
         
         else:
             # Summarization enabled - perform aggregation

@@ -89,13 +89,14 @@ class GeoLocation:
         except (ValueError, TypeError) as e:
             raise ValidationError(f"Failed to parse CSV row: {str(e)}", "csv_row", str(row))
     
-    def matches_target_region(self, target_country: str, target_subdivisions: List[str]) -> bool:
+    def matches_target_region(self, target_country: str, target_subdivisions: Optional[List[str]] = None) -> bool:
         """
         Check if this location matches the target geographic criteria.
         
         Args:
             target_country: Target country code (e.g., "UA")
-            target_subdivisions: List of target subdivision codes (e.g., ["43", "09", "14"])
+            target_subdivisions: Optional list of target subdivision codes (e.g., ["43", "09", "14"]).
+                               If None or empty, matches all subdivisions in the target country.
             
         Returns:
             True if this location matches the criteria

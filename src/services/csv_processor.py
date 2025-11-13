@@ -22,13 +22,14 @@ class CSVProcessor:
     and correlation between locations and network blocks.
     """
     
-    def __init__(self, target_country: str, target_regions: List[str]) -> None:
+    def __init__(self, target_country: str, target_regions: Optional[List[str]] = None) -> None:
         """
         Initialize the CSV processor with target geographic criteria.
         
         Args:
             target_country: Target country code (e.g., "UA")
-            target_regions: List of target subdivision codes (e.g., ["43", "09", "14"])
+            target_regions: Optional list of target subdivision codes (e.g., ["43", "09", "14"]).
+                          If None, filters by country only (all subdivisions).
         """
         self.target_country = target_country.upper()
         self.target_regions = target_regions
@@ -218,7 +219,8 @@ class CSVProcessor:
             )
         
         self.logger.info("Starting GeoIP database processing")
-        self.logger.info(f"Target: {self.target_country} regions {self.target_regions}")
+        regions_desc = f"regions {self.target_regions}" if self.target_regions else "ALL regions (country-level)"
+        self.logger.info(f"Target: {self.target_country} {regions_desc}")
         
         # Reset statistics
         self.stats = {k: 0 for k in self.stats}
