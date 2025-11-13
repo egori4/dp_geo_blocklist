@@ -312,6 +312,20 @@ docker run --rm --env-file .env -v "$(pwd)/data:/app/data" -v "$(pwd)/tmp:/app/t
 
 ## 📝 Version History
 
+### Version 1.4.0 (2025-11-13) - Packaging & Installation
+**Enhancements:**
+- **Packaging & Installation:** Added `install.sh` and `uninstall.sh` scripts for automated setup and removal
+    - Simplifies Docker image build, environment configuration, and volume mounting
+    - Prompts for data retention during uninstallation
+- **Documentation:** Updated README with installation, uninstallation, and quick start instructions
+    - Expanded configuration section with environment variable explanations
+    - Clarified cache management and dry-run workflow
+- **Containerization:** Improved Dockerfile for stateless execution and non-root user security
+    - Ensures all persistence is via mounted volumes (`./data`, `./tmp`)
+    - Supports external scheduling (cron, orchestrators)
+- **Release Process:** Added versioning and changelog structure for future releases
+
+
 ### Version 1.3.0 (2025-11-12) - Cache Management & Configuration Enhancements
 
 **Enhancements:**
