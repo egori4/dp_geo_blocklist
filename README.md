@@ -113,6 +113,11 @@ FILTER_TARGET_REGIONS=true          # Filter by target regions or use cached CSV
 ENABLE_NETWORK_SUMMARIZATION=true   # Aggregate networks (example 760 → 566 networks)
 CONFIGURE_DEFENSEPRO=true           # Configure Blocklists on DefensePro
 
+# Optional: DefensePro Update Mode (v1.4.0+)
+CONFIGURE_DEFENSEPRO_MODE=OVERWRITE # OVERWRITE (default) or MERGE
+                                    # OVERWRITE: Delete all, create fresh (backward compatible)
+                                    # MERGE: Incremental updates only (no blocking gap)
+
 # Optional: Force fresh download (testing)
 FORCE_DOWNLOAD=false                # Bypass cache even if MD5 matches
 
@@ -167,6 +172,62 @@ FORCE_DOWNLOAD=true
 - **Offline Development**: Work with cached data without API connectivity
 - **Controlled Rollout**: Validate configuration on test devices first
 - **Development Testing**: Force fresh downloads to test API integration
+
+### Update Modes (v1.4.0+)
+
+Choose between full overwrite or incremental updates for DefensePro configuration:
+
+#### OVERWRITE Mode (Default)
+```bash
+CONFIGURE_DEFENSEPRO_MODE=OVERWRITE
+```
+
+**Behavior:**
+- Deletes all existing `user_defined_feed_*` blocklists and network classes
+- Creates fresh configuration from scratch
+- Brief blocking gap during delete/recreate cycle
+
+**Best For:**
+- Initial setup and first-time deployment
+- Major configuration changes (switching countries/regions)
+- Troubleshooting configuration issues
+- Ensuring clean state
+
+#### MERGE Mode (Recommended for Scheduled Runs)
+```bash
+CONFIGURE_DEFENSEPRO_MODE=MERGE
+```
+
+**Behavior:**
+- **No Blocking Gap**: Networks stay blocked during entire update process
+- **Incremental Changes**: Only modifies networks that changed (additions/deletions)
+- **Gap Filling**: Reuses freed subindexes before creating new classes
+- **Smart Cleanup**: Automatically deletes empty classes and unused blocklists
+- **Faster Updates**: Minutes vs. full recreation for small changes
+
+**Best For:**
+- Scheduled weekly/daily runs (cron jobs)
+- Minimal network changes between updates
+- Production environments requiring continuous protection
+- Efficient resource utilization
+
+**MERGE Mode Workflow:**
+1. Query existing DefensePro configuration
+2. Calculate diff (networks to add/delete)
+3. Delete removed networks (selective, preserves others)
+4. Add new networks (fills gaps in existing classes first)
+5. Clean up empty classes and blocklists
+6. Update policy once at end
+
+**Comparison:**
+
+| Aspect | OVERWRITE | MERGE |
+|--------|-----------|-------|
+| **Blocking Gap** | Yes (~seconds) | No |
+| **Update Time** | Full recreation | Incremental (faster) |
+| **Network Changes** | All replaced | Only changed |
+| **Gap Management** | Creates new classes | Fills existing gaps |
+| **Best Use Case** | Initial setup | Regular updates |
 
 ### Execution
 
@@ -312,11 +373,44 @@ docker run --rm --env-file .env -v "$(pwd)/data:/app/data" -v "$(pwd)/tmp:/app/t
 
 ## 📝 Version History
 
-### Version 1.4.0 (2025-11-13) - Packaging & Installation
+### Version 1.4.0 (2025-11-18) - New features, Enhancments
+
+**Major Features:**
+- **MERGE Mode**: Incremental DefensePro configuration updates without blocking gaps
+  - Only modifies changed networks (additions/deletions) instead of full overwrite
+  - Networks remain blocked during updates - no temporary permit window
+  - Intelligent gap filling - reuses freed subindexes before creating new classes
+  - Automatic empty class cleanup - deletes unused classes and blocklists
+  - Configuration: `CONFIGURE_DEFENSEPRO_MODE=MERGE` or `OVERWRITE` (default)
+  - Reduces update time for small changes (minutes vs. full recreation)
+
+- **Audit networks change**: Added summary logging of additions/deletions to data/changes_log.csv
+
+**New Components:**
+- **State Management**: `DefenseProStateManager` - Query existing DefensePro configuration
+  - Tracks all blocklists, network classes, occupied subindexes
+  - Calculates optimal placement for new networks (fill gaps first)
+  - Identifies freed subindexes for reuse
+- **Diff Calculator**: `NetworkDiffCalculator` - Identify configuration changes
+  - Compares incoming networks vs. existing configuration
+  - Groups additions, deletions, and unchanged networks
+  - Optimizes deletion operations by class grouping
+- **MERGE Orchestrator**: `MergeStrategyManager` - Complete workflow automation
+  - Query → Diff → Delete → Add → Policy Update
+  - Parallel execution support (respects `PARALLEL_EXECUTION` setting)
+  - Per-device error handling with detailed statistics
+  - Comprehensive logging with operation summaries
+
 **Enhancements:**
 - **Packaging & Installation:** Added `install.sh` and `uninstall.sh` scripts for automated setup and removal
     - Simplifies Docker image build, environment configuration, and volume mounting
     - Prompts for data retention during uninstallation
+- **Enhanced logic of adding networks:** 
+    - Fill gaps in the first class (keeps networks contiguous)
+      Then class 2, class 3, etc.
+      Only use last class after previous classes are full
+      If the last class is over MAX_NETWORKS_PER_CLASS, create a new class
+  
 - **Documentation:** Updated README with installation, uninstallation, and quick start instructions
     - Expanded configuration section with environment variable explanations
     - Clarified cache management and dry-run workflow
@@ -324,6 +418,15 @@ docker run --rm --env-file .env -v "$(pwd)/data:/app/data" -v "$(pwd)/tmp:/app/t
     - Ensures all persistence is via mounted volumes (`./data`, `./tmp`)
     - Supports external scheduling (cron, orchestrators)
 - **Release Process:** Added versioning and changelog structure for future releases
+
+**Configuration:**
+- **MERGE Mode Control**: New environment variable for update strategy:
+  - `CONFIGURE_DEFENSEPRO_MODE=OVERWRITE` - Delete all, create fresh (default, backward compatible)
+  - `CONFIGURE_DEFENSEPRO_MODE=MERGE` - Incremental updates only (recommended for scheduled runs)
+- **Mode Comparison**:
+  - OVERWRITE: Brief blocking gap during delete/recreate, best for initial setup or major changes
+  - MERGE: No blocking gap, faster updates, fills configuration gaps, best for regular maintenance
+
 
 
 ### Version 1.3.0 (2025-11-12) - Cache Management & Configuration Enhancements

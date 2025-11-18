@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
-# Create non-root user for security
-RUN groupadd -r geoip && useradd -r -g geoip geoip
+# Create non-root user with specific UID:GID (1000:1000 - standard for most Linux systems)
+RUN groupadd -g 1000 geoip && useradd -u 1000 -g geoip -m geoip
 
 # Set working directory
 WORKDIR /app
@@ -31,7 +31,7 @@ CMD ["python", "-m", "src.cli.main"]
 
 # Labels for container metadata
 LABEL maintainer="GeoIP Custom IP Blocker"
-LABEL version="1.3.0"
+LABEL version="1.4.0"
 LABEL description="Containerized Python application for GeoIP-based IP range blocking"
 
 # Expose volume for persistent data

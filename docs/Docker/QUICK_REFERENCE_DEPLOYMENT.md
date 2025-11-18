@@ -117,7 +117,6 @@ docker create --name geo-ip-blocker \
   --env-file .env \
   -v "$(pwd)/data:/app/data" \
   -v "$(pwd)/tmp:/app/tmp" \
-  --restart unless-stopped \
   egori4/geo-ip-custom-block:1.3.0
 
 # Run with new configuration

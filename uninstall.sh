@@ -2,7 +2,7 @@
 
 ################################################################################
 # GeoIP Custom IP Blocker - Uninstallation Script
-# Version: 1.3.0
+# Version: 1.4.0
 # 
 # This script removes the geo-ip-custom-block Docker container, image,
 # and optionally the installation directory.
@@ -10,17 +10,27 @@
 
 set -e  # Exit on error
 
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# Detect if terminal supports colors (can be overridden with FORCE_COLOR=1)
+if [ "${FORCE_COLOR:-0}" = "1" ] || ([ -t 1 ] && command -v tput &> /dev/null && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]); then
+    # Terminal supports colors
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    NC='\033[0m' # No Color
+else
+    # Terminal doesn't support colors - use plain text
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    NC=''
+fi
 
 # Default values
 DEFAULT_INSTALL_DIR="/opt/radware/storage/scripts/geo-ip-custom-block/app"
 DOCKER_IMAGE_NAME="egori4/geo-ip-custom-block"
-DOCKER_IMAGE_TAG="1.3.0"
+DOCKER_IMAGE_TAG="1.4.0"
 DOCKER_IMAGE_FULL="${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}"
 CONTAINER_NAME="geo-ip-blocker"
 
@@ -36,7 +46,7 @@ FORCE=false
 print_header() {
     echo -e "${BLUE}╔═══════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${BLUE}║${NC}  ${RED}GeoIP Custom IP Blocker - Uninstallation${NC}                       ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  Version: 1.3.0                                                 ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC}  Version: 1.4.0                                                 ${BLUE}║${NC}"
     echo -e "${BLUE}╚═══════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
 }
@@ -64,33 +74,35 @@ print_section() {
 }
 
 usage() {
-    cat << EOF
-Usage: $0 [OPTIONS]
-
-Uninstall the GeoIP Custom IP Blocker application.
-
-OPTIONS:
-    --keep-data       Keep data directory (CSV exports, logs, cache)
-                      Only removes container and Docker image
-    
-    --remove-all      Complete removal including all data
-                      Removes container, image, and installation directory
-    
-    --force           Skip confirmation prompts (use with caution)
-    
-    -h, --help        Display this help message
-
-EXAMPLES:
-    # Standard uninstall (prompts for data retention):
-    sudo ./uninstall.sh
-    
-    # Keep data, remove container and image only:
-    sudo ./uninstall.sh --keep-data
-    
-    # Complete removal without prompts:
-    sudo ./uninstall.sh --remove-all --force
-
-EOF
+    echo ""
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "Uninstall the GeoIP Custom IP Blocker application."
+    echo ""
+    echo "OPTIONS:"
+    echo "    --keep-data       Keep data directory (CSV exports, logs, cache)"
+    echo "                      Only removes container and Docker image"
+    echo ""
+    echo "    --remove-all      Complete removal including all data"
+    echo "                      Removes container, image, and installation directory"
+    echo ""
+    echo "    --force           Skip confirmation prompts (use with caution)"
+    echo ""
+    echo "    -h, --help        Display this help message"
+    echo ""
+    echo "EXAMPLES:"
+    echo "    # Standard uninstall (prompts for data retention):"
+    echo "    sudo ./uninstall.sh"
+    echo ""
+    echo "    # Keep data, remove container and image only:"
+    echo "    sudo ./uninstall.sh --keep-data"
+    echo ""
+    echo "    # Complete removal without prompts:"
+    echo "    sudo ./uninstall.sh --remove-all --force"
+    echo ""
+    echo "ENVIRONMENT:"
+    echo "    FORCE_COLOR=1     Force colored output even if terminal doesn't report support"
+    echo ""
     exit 0
 }
 
@@ -364,13 +376,11 @@ remove_installation_directory() {
 display_completion_summary() {
     print_section "Uninstallation Complete"
     
-    cat << EOF
-
-${GREEN}✓ Uninstallation completed successfully!${NC}
-
-${BLUE}═══ Summary ═══${NC}
-
-EOF
+    echo ""
+    echo -e "${GREEN}✓ Uninstallation completed successfully!${NC}"
+    echo ""
+    echo -e "${BLUE}═══ Summary ═══${NC}"
+    echo ""
 
     if check_docker; then
         if docker ps -a --filter name="${CONTAINER_NAME}" --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
@@ -400,9 +410,6 @@ EOF
         echo -e "  ${GREEN}✓${NC} Data: ${INSTALL_DIR} - removed"
     fi
     
-    echo ""
-    echo -e "${GREEN}Thank you for using GeoIP Custom IP Blocker!${NC}"
-    echo ""
 }
 
 ################################################################################

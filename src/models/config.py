@@ -38,8 +38,7 @@ class Config:
     syslog_port: int
 
     # Storage Paths
-    state_file: str
-    history_file: str
+    changes_log_file: str
     geodb_cache_dir: str
     cache_retention_count: int  # Number of cache versions to keep
 
@@ -59,6 +58,7 @@ class Config:
     enable_geodb_download: bool
     enable_network_summarization: bool
     configure_defensepro: bool
+    configure_defensepro_mode: str  # OVERWRITE or MERGE
     filter_target_regions: bool
 
     @classmethod
@@ -97,8 +97,7 @@ class Config:
             syslog_port = cls._get_int_env("SYSLOG_PORT", 514)
 
             # Storage paths with defaults
-            state_file = os.getenv("STATE_FILE", "/app/data/ip_state.json")
-            history_file = os.getenv("HISTORY_FILE", "/app/data/ip_history.jsonl")
+            changes_log_file = os.getenv("CHANGES_LOG_FILE", "/app/data/changes_log.csv")
             geodb_cache_dir = os.getenv("GEODB_CACHE_DIR", "/app/data/geodb_cache")
             cache_retention_count = cls._get_int_env("CACHE_RETENTION_COUNT", 3)
 
@@ -118,6 +117,7 @@ class Config:
             enable_geodb_download = cls._get_bool_env("ENABLE_GEODB_DOWNLOAD", True)
             enable_network_summarization = cls._get_bool_env("ENABLE_NETWORK_SUMMARIZATION", True)
             configure_defensepro = cls._get_bool_env("CONFIGURE_DEFENSEPRO", True)
+            configure_defensepro_mode = os.getenv("CONFIGURE_DEFENSEPRO_MODE", "OVERWRITE").strip().upper()
             filter_target_regions = cls._get_bool_env("FILTER_TARGET_REGIONS", True)
 
             # Validate configuration values
@@ -133,6 +133,7 @@ class Config:
                 max_retries=max_retries,
                 retry_backoff_factor=retry_backoff_factor,
                 cache_retention_count=cache_retention_count,
+                configure_defensepro_mode=configure_defensepro_mode,
             )
 
             return cls(
@@ -149,8 +150,7 @@ class Config:
                 syslog_enabled=syslog_enabled,
                 syslog_host=syslog_host,
                 syslog_port=syslog_port,
-                state_file=state_file,
-                history_file=history_file,
+                changes_log_file=changes_log_file,
                 geodb_cache_dir=geodb_cache_dir,
                 cache_retention_count=cache_retention_count,
                 dp_api_timeout=dp_api_timeout,
@@ -162,6 +162,7 @@ class Config:
                 enable_geodb_download=enable_geodb_download,
                 enable_network_summarization=enable_network_summarization,
                 configure_defensepro=configure_defensepro,
+                configure_defensepro_mode=configure_defensepro_mode,
                 filter_target_regions=filter_target_regions,
             )
 
@@ -230,6 +231,7 @@ class Config:
         max_retries: int,
         retry_backoff_factor: float,
         cache_retention_count: int,
+        configure_defensepro_mode: str,
     ) -> None:
         """Validate configuration values for correctness."""
         # Validate log level
@@ -325,6 +327,15 @@ class Config:
                 "CACHE_RETENTION_COUNT",
                 "positive integer (minimum 1)"
             )
+        
+        # Validate DefensePro configuration mode
+        valid_modes = ["OVERWRITE", "MERGE"]
+        if configure_defensepro_mode not in valid_modes:
+            raise ConfigError(
+                f"Invalid DefensePro configuration mode '{configure_defensepro_mode}'. Must be one of: {', '.join(valid_modes)}",
+                "CONFIGURE_DEFENSEPRO_MODE",
+                "OVERWRITE or MERGE"
+            )
 
     def __repr__(self) -> str:
         """Safe representation that doesn't expose sensitive information."""
@@ -339,5 +350,6 @@ class Config:
             f"geodb_download={self.enable_geodb_download}, "
             f"summarization={self.enable_network_summarization}, "
             f"configure_defensepro={self.configure_defensepro}, "
+            f"defensepro_mode='{self.configure_defensepro_mode}', "
             f"filter_regions={self.filter_target_regions})"
         )

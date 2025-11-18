@@ -841,6 +841,115 @@ class DefenseProClient:
                 details={"dp_ip": dp_ip, "network_class": network_class_name}
             )
     
+    def get_blocklists(self, dp_ip: str) -> List[str]:
+        """
+        Get list of blocklist names on DefensePro device.
+        
+        Args:
+            dp_ip: DefensePro device IP address
+            
+        Returns:
+            List of blocklist names
+            
+        Raises:
+            NetworkError: If query fails
+        """
+        blocklists_data = self.get_all_blocklists(dp_ip)
+        return [bl.get("rsNewBlockListName") for bl in blocklists_data 
+                if bl.get("rsNewBlockListName")]
+    
+    def get_network_classes(self, dp_ip: str) -> List[str]:
+        """
+        Get list of unique network class names on DefensePro device.
+        
+        Args:
+            dp_ip: DefensePro device IP address
+            
+        Returns:
+            List of unique network class names
+            
+        Raises:
+            NetworkError: If query fails
+        """
+        classes_data = self.get_all_network_classes(dp_ip)
+        
+        # Extract unique class names
+        class_names = set()
+        for entry in classes_data:
+            class_name = entry.get("rsBWMNetworkName")
+            if class_name:
+                class_names.add(class_name)
+        
+        return sorted(list(class_names))
+    
+    def delete_network_subindex(
+        self,
+        dp_ip: str,
+        network_class_name: str,
+        subindex: int
+    ) -> Dict[str, Any]:
+        """
+        Delete a specific network subindex from a network class.
+        
+        This is used for selective deletion in MERGE mode.
+        
+        Args:
+            dp_ip: DefensePro device IP address
+            network_class_name: Name of the network class
+            subindex: Subindex to delete (0-255)
+            
+        Returns:
+            Dict containing response status
+            
+        Raises:
+            NetworkError: If deletion fails
+        """
+        path = f"/mgmt/device/byip/{dp_ip}/config/rsBWMNetworkTable/{network_class_name}/{subindex}"
+        url = f"https://{self.cc_ip}{path}"
+        
+        self.log.debug(
+            f"Deleting network subindex {subindex} from class '{network_class_name}' "
+            f"on DefensePro {dp_ip}"
+        )
+        
+        try:
+            response = self._delete(url)
+            
+            # Log response details for debugging
+            self.log.debug(
+                f"Delete response: status={response.status_code}, "
+                f"body={response.text[:200] if response.text else 'empty'}"
+            )
+            
+            data = response.json()
+            
+            self.log.debug(f"Successfully deleted subindex {subindex} from '{network_class_name}'")
+            
+            return {
+                "success": True,
+                "class_name": network_class_name,
+                "subindex": subindex,
+                "response": data
+            }
+            
+        except NetworkError as e:
+            self.log.debug(
+                f"NetworkError during deletion: {str(e)}"
+            )
+            raise
+        except Exception as e:
+            self.log.debug(
+                f"Unexpected error during deletion: {str(e)}"
+            )
+            raise NetworkError(
+                f"Failed to delete subindex {subindex} from class '{network_class_name}': {str(e)}",
+                details={
+                    "dp_ip": dp_ip,
+                    "network_class": network_class_name,
+                    "subindex": subindex
+                }
+            )
+    
     def delete_blocklist(
         self,
         dp_ip: str,

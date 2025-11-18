@@ -10,8 +10,8 @@ from typing import List, Dict, Optional
 
 from ..lib.exceptions import NetworkError
 from ..lib.logging_config import get_logger
+from ..models.network_class import NetworkClass
 from .defensepro_client import DefenseProClient
-from .network_class_manager import NetworkClass
 
 
 class BlocklistManager:

@@ -10,24 +10,13 @@ import ipaddress
 import time
 import os
 from typing import List, Dict, Tuple, Optional
-from dataclasses import dataclass
 
 from ..models.geolocation import NetworkRange
+from ..models.network_class import NetworkClass
 from ..lib.exceptions import ValidationError
 from ..lib.logging_config import get_logger
 from .defensepro_client import DefenseProClient
-
-
-@dataclass
-class NetworkClass:
-    """Represents a DefensePro network class with its member networks."""
-    
-    name: str
-    networks: List[Tuple[str, str]]  # List of (address, mask) tuples
-    
-    def __len__(self) -> int:
-        """Return number of networks in this class."""
-        return len(self.networks)
+from .blocklist_manager import BlocklistManager
 
 
 class NetworkClassManager:
@@ -41,14 +30,16 @@ class NetworkClassManager:
     
     CLASS_NAME_PREFIX = "user_defined_feed"
     
-    def __init__(self, logger: Optional[logging.Logger] = None):
+    def __init__(self, logger: Optional[logging.Logger] = None, changes_logger=None):
         """
         Initialize network class manager.
         
         Args:
             logger: Optional logger instance (creates new if not provided)
+            changes_logger: Optional ChangesLogger for tracking changes
         """
         self.log = logger if logger else get_logger("network_class_manager")
+        self.changes_logger = changes_logger
         
         # Read MAX_NETWORKS_PER_CLASS from environment, default to 250
         self.max_networks_per_class = int(os.getenv("MAX_NETWORKS_PER_CLASS", "250"))
@@ -239,6 +230,27 @@ class NetworkClassManager:
                 groups_failed += result["failed"]
                 errors.extend(result["errors"])
                 
+                # Log successful additions to changes log
+                if self.changes_logger and result["created"] > 0:
+                    blocklist_name = BlocklistManager.generate_blocklist_name(network_class.name)
+                    for index, (address, mask) in enumerate(network_class.networks):
+                        # Only log if this network was created successfully
+                        if index < result["created"]:
+                            try:
+                                network = ipaddress.IPv4Network(f"{address}/{mask}", strict=False)
+                                network_cidr = str(network)
+                            except:
+                                network_cidr = f"{address}/{mask}"
+                            
+                            self.changes_logger.record_addition(
+                                device_ip=dp_ip,
+                                network_cidr=network_cidr,
+                                blocklist_name=blocklist_name,
+                                network_class=network_class.name,
+                                subindex=index,
+                                mode='OVERWRITE'
+                            )
+                
                 if result["failed"] == 0:
                     classes_successful += 1
                 
@@ -267,6 +279,25 @@ class NetworkClassManager:
                         )
                         groups_successful += 1
                         class_successes += 1
+                        
+                        # Log addition to changes log
+                        if self.changes_logger:
+                            # Reconstruct CIDR from address and mask
+                            try:
+                                network = ipaddress.IPv4Network(f"{address}/{mask}", strict=False)
+                                network_cidr = str(network)
+                            except:
+                                network_cidr = f"{address}/{mask}"
+                            
+                            blocklist_name = BlocklistManager.generate_blocklist_name(network_class.name)
+                            self.changes_logger.record_addition(
+                                device_ip=dp_ip,
+                                network_cidr=network_cidr,
+                                blocklist_name=blocklist_name,
+                                network_class=network_class.name,
+                                subindex=index,
+                                mode='OVERWRITE'
+                            )
                         
                         # Log progress for large classes
                         if (index + 1) % 50 == 0:

@@ -2,7 +2,7 @@
 
 ################################################################################
 # GeoIP Custom IP Blocker - Package Creation Script
-# Version: 1.3.0
+# Version: 1.4.0
 # 
 # This script creates a complete installation package including:
 # - Docker image archive
@@ -20,15 +20,15 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 # Configuration
-PACKAGE_NAME="geo-ip-custom-block-v1.3.0"
+PACKAGE_NAME="geo-ip-custom-block-v1.4.0"
 DOCKER_IMAGE_NAME="egori4/geo-ip-custom-block"
-DOCKER_IMAGE_TAG="1.3.0"
+DOCKER_IMAGE_TAG="1.4.0"
 DOCKER_IMAGE_FULL="${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}"
 
 print_header() {
     echo -e "${BLUE}╔═══════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${BLUE}║${NC}  ${GREEN}GeoIP Custom IP Blocker - Package Creation${NC}                     ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  Version: 1.3.0                                                 ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC}  Version: 1.4.0                                                 ${BLUE}║${NC}"
     echo -e "${BLUE}╚═══════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
 }
@@ -138,7 +138,23 @@ create_package() {
     
     # Create package archive
     print_info "Creating package archive..."
+    
+    # Temporarily disable exit-on-error for tar command
+    # tar exit code 1 is a warning (file changed), not an error
+    set +e
     tar -czf "${PACKAGE_NAME}.tar.gz" "${PACKAGE_DIR}"
+    TAR_EXIT_CODE=$?
+    set -e
+    
+    # tar exit code 1 means "Some files differ" (non-fatal warning)
+    # tar exit code 0 means success
+    # tar exit code 2+ means actual error
+    if [ $TAR_EXIT_CODE -eq 1 ]; then
+        print_info "Warning: Some files changed during archive creation (non-fatal)"
+    elif [ $TAR_EXIT_CODE -gt 1 ]; then
+        print_error "Failed to create package archive"
+        exit 1
+    fi
     
     PACKAGE_SIZE=$(du -h "${PACKAGE_NAME}.tar.gz" | cut -f1)
     print_success "Package created: ${PACKAGE_NAME}.tar.gz (${PACKAGE_SIZE})"
@@ -170,6 +186,16 @@ push_to_dockerhub() {
         echo ""
         print_info "Image is now available at:"
         print_info "  docker pull ${DOCKER_IMAGE_FULL}"
+
+
+        print_info "Tagging image ${DOCKER_IMAGE_FULL} as latest..."
+        docker tag "${DOCKER_IMAGE_FULL}" egori4/geo-ip-custom-block:latest
+
+        # Push latest tag
+        print_info "Pushing latest tag to Docker Hub..."
+        docker push egori4/geo-ip-custom-block:latest
+
+
     else
         print_info "Skipping Docker Hub push"
         print_info "Users will use the local image archive from the package"

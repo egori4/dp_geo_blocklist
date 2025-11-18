@@ -27,8 +27,8 @@ This installation package contains:
 
 ```bash
 # Extract the package
-tar -xzf geo-ip-custom-block-v1.3.0.tar.gz
-cd geo-ip-custom-block
+tar -xzf geo-ip-custom-block-v1.4.0.tar.gz
+cd geo-ip-custom-block-v1.4.0
 
 # Make scripts executable
 chmod +x install.sh uninstall.sh
@@ -41,7 +41,7 @@ The installation script will:
 1. ✓ Check Docker installation
 2. ✓ Prompt for installation directory (default: /opt/radware/storage/scripts/geo-ip-custom-block/app)
 3. ✓ Create directory structure with proper permissions
-4. ✓ Try to pull Docker image from Docker Hub (egori4/geo-ip-custom-block:1.3.0)
+4. ✓ Try to pull Docker image from Docker Hub (egori4/geo-ip-custom-block:1.4.0)
 5. ✓ Fall back to local archive if Docker Hub unavailable
 6. ✓ Prompt for configuration values
 7. ✓ Create and configure .env file
@@ -121,8 +121,7 @@ docker create --name geo-ip-blocker \
   --env-file .env \
   -v "$(pwd)/data:/app/data" \
   -v "$(pwd)/tmp:/app/tmp" \
-  --restart unless-stopped \
-  egori4/geo-ip-custom-block:1.3.0
+  egori4/geo-ip-custom-block:1.4.0
 
 # Run and check results
 docker start geo-ip-blocker
@@ -219,8 +218,7 @@ docker create --name geo-ip-blocker \
   --env-file .env \
   -v "$(pwd)/data:/app/data" \
   -v "$(pwd)/tmp:/app/tmp" \
-  --restart unless-stopped \
-  egori4/geo-ip-custom-block:1.3.0
+  egori4/geo-ip-custom-block:1.4.0
 
 # Run with new configuration
 docker start geo-ip-blocker
@@ -350,7 +348,7 @@ docker create --name geo-ip-blocker \
   --env-file .env \
   -v "$(pwd)/data:/app/data" \
   -v "$(pwd)/tmp:/app/tmp" \
-  egori4/geo-ip-custom-block:1.3.0
+  egori4/geo-ip-custom-block:1.4.0
 
 # Run and check logs
 docker start geo-ip-blocker
@@ -435,5 +433,5 @@ For issues or questions:
 
 ---
 
-**Version**: 1.3.0  
-**Last Updated**: 2025-11-12
+**Version**: 1.4.0  
+**Last Updated**: 2025-11-17
