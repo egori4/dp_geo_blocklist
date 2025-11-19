@@ -5,12 +5,17 @@ This module provides the main application workflow including configuration loadi
 logging setup, and error handling framework.
 """
 
+
 import sys
 import csv
 import logging
 from pathlib import Path
 from typing import Optional, List
 from dotenv import load_dotenv
+from collections import namedtuple
+
+# Used for summarization statistics
+SummarizationResult = namedtuple('SummarizationResult', ['original_count', 'summarized_count', 'reduction_percentage'])
 
 from ..lib.exceptions import ConfigError, GeoIPError, NetworkError, ValidationError, StateError
 from ..lib.logging_config import setup_logging, get_logger, log_operation_start, log_operation_success, log_operation_error
@@ -799,8 +804,6 @@ def main() -> int:
             networks_to_push = network_ranges
             
             # Create a mock summarization result for logging
-            from collections import namedtuple
-            SummarizationResult = namedtuple('SummarizationResult', ['original_count', 'summarized_count', 'reduction_percentage'])
             summarization_result = SummarizationResult(
                 original_count=len(network_ranges),
                 summarized_count=len(network_ranges),
@@ -840,8 +843,6 @@ def main() -> int:
             summarized_count = len(networks_to_push)
             reduction_percentage = ((original_count - summarized_count) / original_count * 100) if original_count > 0 else 0.0
             
-            from collections import namedtuple
-            SummarizationResult = namedtuple('SummarizationResult', ['original_count', 'summarized_count', 'reduction_percentage'])
             summarization_result = SummarizationResult(
                 original_count=original_count,
                 summarized_count=summarized_count,
